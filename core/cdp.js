@@ -8,6 +8,7 @@ const COMMON_DIR = path.join(__dirname, "..", "common");
 class CDP {
   constructor() {
     this.debuggingPort = null;
+    this.apiBaseUrl = "http://localhost:3000";
     this.connections = new Map();
     this.messageId = 0;
     this.pendingMessages = new Map();
@@ -174,8 +175,10 @@ class CDP {
         }
 
         // Set target ID before init.js so it can access it
+        const targetIdJson = JSON.stringify(target.id);
+        const apiBaseUrlJson = JSON.stringify(this.apiBaseUrl || "http://localhost:3000");
         await this.sendCommand(target.id, "Runtime.evaluate", {
-          expression: `window.selenium_debugger_target_id = "${target.id}"; localStorage.setItem("selenium_debugger_target_id", "${target.id}")`,
+          expression: `window.selenium_debugger_target_id = ${targetIdJson}; window.selenium_debugger_api_base = ${apiBaseUrlJson}; try { localStorage.setItem("selenium_debugger_target_id", ${targetIdJson}); localStorage.setItem("selenium_debugger_api_base", ${apiBaseUrlJson}); } catch (e) {}`,
         });
 
         for (const script of scripts) {

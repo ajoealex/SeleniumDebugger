@@ -8,7 +8,27 @@ const config = require("./config");
 const { CDP } = require("./core/cdp");
 
 const DRIVER_DIR = path.join(__dirname, "web_driver");
+const rawConsoleLogClearInterval = Number(config.consoleLogClearInterval);
+const CONSOLE_LOG_CLEAR_INTERVAL = Number.isFinite(rawConsoleLogClearInterval) && rawConsoleLogClearInterval >= 0
+  ? Math.floor(rawConsoleLogClearInterval)
+  : 2000;
+const API_HOST = config.apiHost || "127.0.0.1";
 const API_PORT = config.apiPort || 3000;
+const API_BASE_URL = config.apiBaseUrl || `http://${API_HOST === "0.0.0.0" ? "127.0.0.1" : API_HOST}:${API_PORT}`;
+
+let consoleLogCount = 0;
+const originalConsoleLog = console.log.bind(console);
+console.log = (...args) => {
+  consoleLogCount += 1;
+  if (
+    CONSOLE_LOG_CLEAR_INTERVAL > 0 &&
+    consoleLogCount % CONSOLE_LOG_CLEAR_INTERVAL === 0 &&
+    typeof console.clear === "function"
+  ) {
+    console.clear();
+  }
+  originalConsoleLog(...args);
+};
 
 let driver = null;
 let cdp = null;
@@ -845,6 +865,7 @@ async function main() {
   const capabilities = config.capabilities || {};
 
   cdp = new CDP();
+  cdp.apiBaseUrl = API_BASE_URL;
 
   console.log(`Launching ${browserName}...`);
   console.log(`Platform: ${process.platform}`);
@@ -867,8 +888,8 @@ async function main() {
 
     // Start API server
     const app = createApiServer();
-    apiServer = app.listen(API_PORT, () => {
-      console.log(`[API] Server listening on http://localhost:${API_PORT}`);
+    apiServer = app.listen(API_PORT, API_HOST, () => {
+      console.log(`[API] Server listening on ${API_BASE_URL} (bind: ${API_HOST}:${API_PORT})`);
     });
 
     const url = config.url || "https://example.com/";

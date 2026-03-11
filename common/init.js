@@ -1,7 +1,20 @@
 window.selenium_debugger_injected = true;
 console.log(`selenium_debugger_injected: true, target_id: ${window.selenium_debugger_target_id}`);
 
-const AJ_API_BASE = "http://localhost:3000";
+const AJ_API_BASE = (function() {
+  if (window.selenium_debugger_api_base) {
+    return window.selenium_debugger_api_base;
+  }
+  try {
+    const storedBase = localStorage.getItem("selenium_debugger_api_base");
+    if (storedBase) {
+      return storedBase;
+    }
+  } catch (e) {
+    // Ignore localStorage access failures in restricted contexts.
+  }
+  return "http://localhost:3000";
+})();
 
 // Helper function to call API
 async function aj__api(endpoint, method = "GET", body = null) {

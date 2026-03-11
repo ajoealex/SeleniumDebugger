@@ -16,22 +16,71 @@ async function aj__api(endpoint, method = "GET", body = null) {
   return res.json();
 }
 
-// Helper function to set data-aj-target on element
+function aj__generate_elem_id() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+}
+
+// Helper function to set aj-target on an element and save it in elem_repo
 function aj__set_target(element) {
-  const existing = document.querySelector('[data-aj-target="true"]');
-  if (existing) {
-    existing.removeAttribute('data-aj-target');
+  if (!element) {
+    return null;
   }
-  if (element) {
-    element.setAttribute('data-aj-target', 'true');
+
+  const repo = window.aj__webdriver?.elem_repo;
+  if (!repo) {
+    return null;
   }
+
+  let elemId = null;
+  for (const [existingId, existingElement] of Object.entries(repo)) {
+    if (existingElement === element) {
+      elemId = existingId;
+      break;
+    }
+  }
+
+  if (!elemId) {
+    elemId = aj__generate_elem_id();
+  }
+
+  repo[elemId] = element;
+  element.setAttribute("aj-target", elemId);
+  return elemId;
+}
+
+function aj__clear_target(elemId) {
+  if (!elemId || !window.aj__webdriver?.elem_repo) {
+    return;
+  }
+
+  const element = window.aj__webdriver.elem_repo[elemId];
+  if (element && typeof element.removeAttribute === "function") {
+    element.removeAttribute("aj-target");
+  }
+  delete window.aj__webdriver.elem_repo[elemId];
+}
+
+function aj__with_target(element, requestFactory) {
+  const elemId = aj__set_target(element);
+  const request = requestFactory(elemId);
+  return Promise.resolve(request).finally(function() {
+    aj__clear_target(elemId);
+  });
 }
 
 // WebDriver API helper functions (https://www.w3.org/TR/webdriver2/#endpoints)
 window.aj__webdriver = {
+  elem_repo: {},
+
   // Session
   status: function() {
     return aj__api("/status");
+  },
+  close_session: function() {
+    return aj__api("/close_session", "POST");
+  },
+  reinject: function() {
+    return aj__api("/reinject", "POST");
   },
 
   // Timeouts
@@ -96,8 +145,9 @@ window.aj__webdriver = {
 
   // Frame
   switch_to_frame: function(element) {
-    aj__set_target(element);
-    return aj__api("/switch_to_frame", "POST", { targetId: window.selenium_debugger_target_id });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/switch_to_frame", "POST", { targetId: window.selenium_debugger_target_id, elemId });
+    });
   },
   switch_to_parent_frame: function() {
     return aj__api("/switch_to_parent_frame", "POST");
@@ -108,48 +158,64 @@ window.aj__webdriver = {
     return document.activeElement;
   },
   is_element_selected: function(element) {
-    aj__set_target(element);
-    return aj__api("/is_element_selected", "POST", { targetId: window.selenium_debugger_target_id });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/is_element_selected", "POST", { targetId: window.selenium_debugger_target_id, elemId });
+    });
   },
   get_element_attribute: function(element, name) {
-    aj__set_target(element);
-    return aj__api("/get_element_attribute", "POST", { targetId: window.selenium_debugger_target_id, name });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/get_element_attribute", "POST", { targetId: window.selenium_debugger_target_id, elemId, name });
+    });
   },
   get_element_property: function(element, name) {
-    aj__set_target(element);
-    return aj__api("/get_element_property", "POST", { targetId: window.selenium_debugger_target_id, name });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/get_element_property", "POST", { targetId: window.selenium_debugger_target_id, elemId, name });
+    });
   },
   get_element_css_value: function(element, propertyName) {
-    aj__set_target(element);
-    return aj__api("/get_element_css_value", "POST", { targetId: window.selenium_debugger_target_id, propertyName });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/get_element_css_value", "POST", { targetId: window.selenium_debugger_target_id, elemId, propertyName });
+    });
   },
   get_element_text: function(element) {
-    aj__set_target(element);
-    return aj__api("/get_element_text", "POST", { targetId: window.selenium_debugger_target_id });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/get_element_text", "POST", { targetId: window.selenium_debugger_target_id, elemId });
+    });
   },
   get_element_tag_name: function(element) {
-    aj__set_target(element);
-    return aj__api("/get_element_tag_name", "POST", { targetId: window.selenium_debugger_target_id });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/get_element_tag_name", "POST", { targetId: window.selenium_debugger_target_id, elemId });
+    });
   },
   get_element_rect: function(element) {
-    aj__set_target(element);
-    return aj__api("/get_element_rect", "POST", { targetId: window.selenium_debugger_target_id });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/get_element_rect", "POST", { targetId: window.selenium_debugger_target_id, elemId });
+    });
   },
   is_element_enabled: function(element) {
-    aj__set_target(element);
-    return aj__api("/is_element_enabled", "POST", { targetId: window.selenium_debugger_target_id });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/is_element_enabled", "POST", { targetId: window.selenium_debugger_target_id, elemId });
+    });
   },
   element_click: function(element) {
-    aj__set_target(element);
-    return aj__api("/element_click", "POST", { targetId: window.selenium_debugger_target_id });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/element_click", "POST", { targetId: window.selenium_debugger_target_id, elemId });
+    });
   },
   element_clear: function(element) {
-    aj__set_target(element);
-    return aj__api("/element_clear", "POST", { targetId: window.selenium_debugger_target_id });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/element_clear", "POST", { targetId: window.selenium_debugger_target_id, elemId });
+    });
   },
   element_send_keys: function(element, value) {
-    aj__set_target(element);
-    return aj__api("/element_send_keys", "POST", { targetId: window.selenium_debugger_target_id, value });
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/element_send_keys", "POST", { targetId: window.selenium_debugger_target_id, elemId, value });
+    });
+  },
+  element_send_combo_keys: function(element, keys) {
+    return aj__with_target(element, function(elemId) {
+      return aj__api("/element_send_combo_keys", "POST", { targetId: window.selenium_debugger_target_id, elemId, keys });
+    });
   },
 
   // Document

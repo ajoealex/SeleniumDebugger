@@ -154,7 +154,7 @@ class CDP {
     return result.result?.value === true;
   }
 
-  async injectIntoAllTargets() {
+  async injectIntoAllTargets(force = false) {
     const scripts = this.loadScriptsFromCommon();
     if (scripts.length === 0) {
       console.log("[CDP] No scripts found in common folder");
@@ -168,7 +168,7 @@ class CDP {
       try {
         await this.connect(target);
 
-        if (await this.isAlreadyInjected(target.id)) {
+        if (!force && (await this.isAlreadyInjected(target.id))) {
           console.log(`[CDP] Skipping ${target.type}: ${target.title} (already injected)`);
           continue;
         }

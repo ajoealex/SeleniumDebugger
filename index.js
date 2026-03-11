@@ -1,6 +1,6 @@
 const path = require("path");
 const express = require("express");
-const { Builder, By } = require("selenium-webdriver");
+const { Builder, By, Key } = require("selenium-webdriver");
 const chrome = require("selenium-webdriver/chrome");
 const edge = require("selenium-webdriver/edge");
 const firefox = require("selenium-webdriver/firefox");
@@ -12,6 +12,9 @@ const API_PORT = config.apiPort || 3000;
 
 let driver = null;
 let cdp = null;
+let apiServer = null;
+let stopInjectionLoop = null;
+let shutdownInProgress = false;
 
 function getOsFolder() {
   switch (process.platform) {
@@ -115,6 +118,111 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeSendKeysValue(value) {
+  if (!Array.isArray(value)) {
+    return [value];
+  }
+
+  return value.map((item) => {
+    if (
+      typeof item === "string" &&
+      Object.prototype.hasOwnProperty.call(Key, item) &&
+      typeof Key[item] === "string"
+    ) {
+      return Key[item];
+    }
+
+    return item;
+  });
+}
+
+function normalizeComboKeys(keys) {
+  if (!Array.isArray(keys) || keys.length === 0) {
+    throw new Error("keys must be a non-empty array");
+  }
+
+  return keys.map((item) => {
+    if (typeof item !== "string") {
+      throw new Error("each combo key must be a string");
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(Key, item) &&
+      typeof Key[item] === "string"
+    ) {
+      return Key[item];
+    }
+
+    if (item.length === 1) {
+      return item;
+    }
+
+    throw new Error(`Invalid combo key: ${item}. Use Selenium Key enum name or single character.`);
+  });
+}
+
+async function safelyCloseCurrentSession() {
+  const sessionWasActive = !!driver;
+  if (!sessionWasActive) {
+    if (cdp) {
+      cdp.disconnectAll();
+    }
+    return { success: true, alreadyClosed: true };
+  }
+
+  try {
+    await driver.quit();
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : "";
+    if (!/invalid session id|no such session|session not found/i.test(msg)) {
+      throw e;
+    }
+  } finally {
+    driver = null;
+    if (cdp) {
+      cdp.disconnectAll();
+    }
+  }
+
+  return { success: true, alreadyClosed: false };
+}
+
+async function closeApiServer() {
+  if (!apiServer) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    apiServer.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+  apiServer = null;
+}
+
+async function shutdownTool() {
+  if (shutdownInProgress) {
+    return;
+  }
+  shutdownInProgress = true;
+
+  if (typeof stopInjectionLoop === "function") {
+    stopInjectionLoop();
+    stopInjectionLoop = null;
+  }
+
+  const result = await safelyCloseCurrentSession();
+  if (!result.alreadyClosed) {
+    console.log("Browser closed cleanly.");
+  }
+
+  await closeApiServer();
+}
+
 async function startInjectionLoop(cdpInstance, intervalMs = 10000) {
   let running = true;
 
@@ -215,6 +323,39 @@ function createApiServer() {
   // Status
   app.get("/status", (req, res) => {
     res.json({ ready: !!driver, status: "running" });
+  });
+
+  app.post("/close_session", async (req, res) => {
+    try {
+      if (shutdownInProgress) {
+        res.json({ success: true, shuttingDown: true, alreadyShuttingDown: true });
+        return;
+      }
+
+      res.once("finish", () => {
+        shutdownTool()
+          .then(() => process.exit(0))
+          .catch((e) => {
+            console.error("Failed to shutdown cleanly:", e.message);
+            process.exit(1);
+          });
+      });
+      res.json({ success: true, shuttingDown: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/reinject", async (req, res) => {
+    try {
+      if (!cdp) {
+        throw new Error("CDP is not initialized");
+      }
+      await cdp.injectIntoAllTargets(true);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // Timeouts
@@ -391,12 +532,19 @@ function createApiServer() {
     }
   });
 
+  function getTargetSelector(elemId) {
+    if (typeof elemId === "string" && elemId.trim()) {
+      return `[aj-target="${elemId}"]`;
+    }
+    return '[data-aj-target="true"],[aj-target]';
+  }
+
   // Frame
   app.post("/switch_to_frame", async (req, res) => {
     try {
-      const { targetId } = req.body;
+      const { targetId, elemId } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css('[data-aj-target="true"]'));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       await driver.switchTo().frame(element);
       res.json({ success: true });
     } catch (e) {
@@ -413,14 +561,13 @@ function createApiServer() {
     }
   });
 
-  // Element actions using Selenium WebDriver (element identified by data-aj-target attribute)
-  const TARGET_SELECTOR = '[data-aj-target="true"]';
+  // Element actions using Selenium WebDriver (element identified by aj-target attribute)
 
   app.post("/element_click", async (req, res) => {
     try {
-      const { targetId } = req.body;
+      const { targetId, elemId } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       await element.click();
       res.json({ success: true });
     } catch (e) {
@@ -430,9 +577,9 @@ function createApiServer() {
 
   app.post("/element_clear", async (req, res) => {
     try {
-      const { targetId } = req.body;
+      const { targetId, elemId } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       await element.clear();
       res.json({ success: true });
     } catch (e) {
@@ -442,10 +589,34 @@ function createApiServer() {
 
   app.post("/element_send_keys", async (req, res) => {
     try {
-      const { targetId, value } = req.body;
+      const { targetId, elemId, value } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
-      await element.sendKeys(value);
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
+      const keys = normalizeSendKeysValue(value);
+      await element.sendKeys(...keys);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/element_send_combo_keys", async (req, res) => {
+    try {
+      const { targetId, elemId, keys } = req.body;
+      await switchToTargetFrame(targetId);
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
+      const comboKeys = normalizeComboKeys(keys);
+
+      await element.click();
+      const actions = driver.actions({ async: true });
+      for (const key of comboKeys) {
+        actions.keyDown(key);
+      }
+      for (const key of [...comboKeys].reverse()) {
+        actions.keyUp(key);
+      }
+      await actions.perform();
+
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -454,9 +625,9 @@ function createApiServer() {
 
   app.post("/get_element_text", async (req, res) => {
     try {
-      const { targetId } = req.body;
+      const { targetId, elemId } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       const text = await element.getText();
       res.json({ value: text });
     } catch (e) {
@@ -466,9 +637,9 @@ function createApiServer() {
 
   app.post("/get_element_attribute", async (req, res) => {
     try {
-      const { targetId, name } = req.body;
+      const { targetId, elemId, name } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       const value = await element.getAttribute(name);
       res.json({ value });
     } catch (e) {
@@ -478,9 +649,9 @@ function createApiServer() {
 
   app.post("/get_element_property", async (req, res) => {
     try {
-      const { targetId, name } = req.body;
+      const { targetId, elemId, name } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       const value = await driver.executeScript(`return arguments[0]['${name}']`, element);
       res.json({ value });
     } catch (e) {
@@ -490,9 +661,9 @@ function createApiServer() {
 
   app.post("/get_element_css_value", async (req, res) => {
     try {
-      const { targetId, propertyName } = req.body;
+      const { targetId, elemId, propertyName } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       const value = await element.getCssValue(propertyName);
       res.json({ value });
     } catch (e) {
@@ -502,9 +673,9 @@ function createApiServer() {
 
   app.post("/is_element_enabled", async (req, res) => {
     try {
-      const { targetId } = req.body;
+      const { targetId, elemId } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       const value = await element.isEnabled();
       res.json({ value });
     } catch (e) {
@@ -514,9 +685,9 @@ function createApiServer() {
 
   app.post("/is_element_selected", async (req, res) => {
     try {
-      const { targetId } = req.body;
+      const { targetId, elemId } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       const value = await element.isSelected();
       res.json({ value });
     } catch (e) {
@@ -526,9 +697,9 @@ function createApiServer() {
 
   app.post("/get_element_tag_name", async (req, res) => {
     try {
-      const { targetId } = req.body;
+      const { targetId, elemId } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       const value = await element.getTagName();
       res.json({ value });
     } catch (e) {
@@ -538,9 +709,9 @@ function createApiServer() {
 
   app.post("/get_element_rect", async (req, res) => {
     try {
-      const { targetId } = req.body;
+      const { targetId, elemId } = req.body;
       await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(TARGET_SELECTOR));
+      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
       const rect = await element.getRect();
       res.json({ value: rect });
     } catch (e) {
@@ -678,8 +849,6 @@ async function main() {
   console.log(`Launching ${browserName}...`);
   console.log(`Platform: ${process.platform}`);
 
-  let stopInjectionLoop;
-
   try {
     console.log("Creating driver...");
     driver = await createDriver(browserName, capabilities);
@@ -698,7 +867,7 @@ async function main() {
 
     // Start API server
     const app = createApiServer();
-    app.listen(API_PORT, () => {
+    apiServer = app.listen(API_PORT, () => {
       console.log(`[API] Server listening on http://localhost:${API_PORT}`);
     });
 
@@ -716,12 +885,7 @@ async function main() {
   } catch (error) {
     console.error("Error:", error.message);
   } finally {
-    if (stopInjectionLoop) stopInjectionLoop();
-    cdp.disconnectAll();
-    if (driver) {
-      await driver.quit();
-      console.log("Browser closed cleanly.");
-    }
+    await shutdownTool();
   }
 }
 

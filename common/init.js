@@ -81,6 +81,215 @@ function aj__with_target(element, requestFactory) {
   });
 }
 
+class InteractionChain {
+  constructor() {
+    this.steps = [];
+    this.allocatedElemIds = new Set();
+  }
+
+  resolveElementRef(value) {
+    const isElementObject = !!value && typeof value === "object" && value.nodeType === Node.ELEMENT_NODE;
+    if (!isElementObject) {
+      throw new Error("Element must be a DOM element object");
+    }
+
+    const repo = window.aj__webdriver?.elem_repo || {};
+    const existingIds = new Set(Object.keys(repo));
+    const elemId = aj__set_target(value);
+    if (!elemId) {
+      throw new Error("Failed to resolve element");
+    }
+
+    if (!existingIds.has(elemId)) {
+      this.allocatedElemIds.add(elemId);
+    }
+
+    return elemId;
+  }
+
+  toString() {
+    return JSON.stringify(this.steps);
+  }
+
+  clearChain() {
+    for (const elemId of this.allocatedElemIds) {
+      aj__clear_target(elemId);
+    }
+    this.allocatedElemIds.clear();
+    this.steps = [];
+    return this;
+  }
+
+  /* CLICK */
+  click() {
+    this.steps.push({ action: "clickCursor" });
+    return this;
+  }
+
+  clickElement(element) {
+    this.steps.push({
+      action: "clickElement",
+      element: this.resolveElementRef(element)
+    });
+    return this;
+  }
+
+  clickElementOffset(element, x, y) {
+    this.steps.push({
+      action: "clickElementOffset",
+      element: this.resolveElementRef(element),
+      x,
+      y
+    });
+    return this;
+  }
+
+  /* DOUBLE CLICK */
+  doubleClick() {
+    this.steps.push({ action: "doubleClickCursor" });
+    return this;
+  }
+
+  doubleClickElement(element) {
+    this.steps.push({
+      action: "doubleClickElement",
+      element: this.resolveElementRef(element)
+    });
+    return this;
+  }
+
+  /* CONTEXT CLICK */
+  contextClick() {
+    this.steps.push({ action: "contextClickCursor" });
+    return this;
+  }
+
+  contextClickElement(element) {
+    this.steps.push({
+      action: "contextClickElement",
+      element: this.resolveElementRef(element)
+    });
+    return this;
+  }
+
+  /* MOVE */
+  moveToElement(element) {
+    this.steps.push({
+      action: "moveToElement",
+      element: this.resolveElementRef(element)
+    });
+    return this;
+  }
+
+  moveToElementOffset(element, x, y) {
+    this.steps.push({
+      action: "moveToElementOffset",
+      element: this.resolveElementRef(element),
+      x,
+      y
+    });
+    return this;
+  }
+
+  moveByOffset(x, y) {
+    this.steps.push({
+      action: "moveByOffset",
+      x,
+      y
+    });
+    return this;
+  }
+
+  /* HOLD */
+  clickAndHold() {
+    this.steps.push({ action: "clickAndHoldCursor" });
+    return this;
+  }
+
+  clickAndHoldElement(element) {
+    this.steps.push({
+      action: "clickAndHoldElement",
+      element: this.resolveElementRef(element)
+    });
+    return this;
+  }
+
+  /* RELEASE */
+  release() {
+    this.steps.push({ action: "releaseCursor" });
+    return this;
+  }
+
+  releaseElement(element) {
+    this.steps.push({
+      action: "releaseElement",
+      element: this.resolveElementRef(element)
+    });
+    return this;
+  }
+
+  /* DRAG */
+  dragAndDrop(source, target) {
+    this.steps.push({
+      action: "dragAndDrop",
+      source: this.resolveElementRef(source),
+      target: this.resolveElementRef(target)
+    });
+    return this;
+  }
+
+  dragAndDropBy(source, x, y) {
+    this.steps.push({
+      action: "dragAndDropBy",
+      source: this.resolveElementRef(source),
+      x,
+      y
+    });
+    return this;
+  }
+
+  /* KEYBOARD */
+  keyDown(key) {
+    this.steps.push({
+      action: "keyDown",
+      key
+    });
+    return this;
+  }
+
+  keyUp(key) {
+    this.steps.push({
+      action: "keyUp",
+      key
+    });
+    return this;
+  }
+
+  sendKeys(...keys) {
+    this.steps.push({
+      action: "sendKeys",
+      keys
+    });
+    return this;
+  }
+
+  pause(ms) {
+    this.steps.push({
+      action: "pause",
+      ms
+    });
+    return this;
+  }
+
+  async perform() {
+    console.log(this.toString());
+    return aj__api("/interactions", "POST", {
+      targetId: window.selenium_debugger_target_id,
+      steps: this.steps
+    });
+  }
+}
+
 // WebDriver API helper functions (https://www.w3.org/TR/webdriver2/#endpoints)
 window.aj__webdriver = {
   elem_repo: {},
@@ -254,7 +463,11 @@ window.aj__webdriver = {
     return aj__api("/delete_all_cookies", "DELETE");
   },
 
-  // Actions TBD
+  // Actions
+  interaction_chain: function() {
+    return new InteractionChain();
+  },
+  InteractionChain,
   perform_actions: function() {},
   release_actions: function() {},
 

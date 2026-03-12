@@ -468,8 +468,6 @@ window.aj__webdriver = {
     return new InteractionChain();
   },
   InteractionChain,
-  perform_actions: function() {},
-  release_actions: function() {},
 
   // Alerts
   dismiss_alert: function() {

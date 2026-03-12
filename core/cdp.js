@@ -187,6 +187,10 @@ class CDP {
           });
           console.log(`[CDP] Injected "${script.name}" into ${target.type}: ${target.title}`);
         }
+
+        await this.sendCommand(target.id, "Runtime.evaluate", {
+          expression: 'console.warn("[SeleniumDebugger] All scripts injected and ready for debugging");',
+        });
       } catch (err) {
         console.error(`[CDP] Failed to inject into ${target.id}: ${err.message}`);
       }

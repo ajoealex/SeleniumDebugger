@@ -1,12 +1,53 @@
 # SeleniumDebugger
 
-A Node.js app that launches Chrome, Edge, or Firefox using Selenium WebDriver based on configuration.
+## What SeleniumDebugger Is and Why this tool is useful
+
+This tool allows launching a browser and sending Selenium-level events from the running browser console to test Selenium event behavior on various elements in the running browser. It helps debug anomalies or weird behavior caused by web app element design or app design without having to retrigger the entire execution. You can test various Selenium events on a given page, helping you debug a certain situation and devise a way to handle it using built-in Selenium methods.
+
+SeleniumDebugger is an interactive Selenium sandbox for a live browser session. It lets you trigger real WebDriver actions from the browser console (`window.aj__webdriver`) against the current page state, instead of re-running full test scripts each time.
+
+## How It Works
+
+1. Starts a Selenium-controlled browser (Chrome/Edge/Firefox).
+2. Runs a local Express API that maps calls to Selenium WebDriver commands.
+3. Injects helper scripts into page/iframe targets.
+4. Exposes browser-side APIs like:
+   Navigation/window/frame/element methods
+   Keyboard and mouse actions
+   `interaction_chain()` for multi-step action sequences
+
+When you call methods from DevTools console, those calls are executed through Selenium on the same live page.
+
+## Why It Is Useful for Selenium Developers
+
+- Debug flaky actions faster: test click, move, drag, and key combos immediately.
+- Avoid full test reruns: reproduce issues in-place on the exact current UI state.
+- Validate edge cases: overlays, animations, hidden/intercepted elements, iframe context, and focus issues.
+- Tune interaction strategy: compare approaches (normal click vs move+click, combo keys, pause timing).
+- Understand event behavior: verify how a specific component reacts to Selenium-level input before updating framework code.
+
+## Typical Workflow
+
+1. Open app page with SeleniumDebugger running.
+2. Inspect/select elements in browser DevTools.
+3. Execute `aj__webdriver` calls or build an `interaction_chain()`.
+4. Observe page and console behavior.
+5. Convert the working sequence into stable test code in your automation suite.
 
 ## Installation
 
 ```bash
 npm install
 ```
+
+### ChromeDriver setup (manual)
+
+- You must manually download ChromeDriver that matches your installed Chrome browser version.
+- Place the downloaded driver in the project `web_driver` folder for your OS:
+  - Windows: `web_driver/windows/chromedriver.exe`
+  - macOS: `web_driver/macos/chromedriver`
+  - Linux: `web_driver/linux/chromedriver`
+- Download helper: https://ajoealex.github.io/chromedriver-download-helper/
 
 ## Usage
 
@@ -302,7 +343,111 @@ await aj__webdriver.send_alert_text("hello");
 await aj__webdriver.take_screenshot();
 ```
 
+### Interaction Chain
+
+Create a chain:
+
+```js
+const chain = aj__webdriver.interaction_chain();
+// or
+const chain2 = new aj__webdriver.InteractionChain();
+```
+
+Rules:
+- Element-based methods only accept DOM element objects (not selector strings or element ids).
+- `toString()` returns the current steps as a JSON string.
+- `perform()` executes current steps but does not clear them.
+- Use `clearChain()` to clear steps and release temporary element mappings.
+
+Supported methods:
+
+```js
+// Mouse click
+chain.click();
+chain.clickElement(element);
+chain.clickElementOffset(element, x, y);
+
+// Double click
+chain.doubleClick();
+chain.doubleClickElement(element);
+
+// Context click
+chain.contextClick();
+chain.contextClickElement(element);
+
+// Move
+chain.moveToElement(element);
+chain.moveToElementOffset(element, x, y);
+chain.moveByOffset(x, y);
+
+// Hold / release
+chain.clickAndHold();
+chain.clickAndHoldElement(element);
+chain.release();
+chain.releaseElement(element);
+
+// Drag
+chain.dragAndDrop(sourceElement, targetElement);
+chain.dragAndDropBy(sourceElement, x, y);
+
+// Keyboard / timing
+chain.keyDown(key);
+chain.keyUp(key);
+chain.sendKeys(...keys);
+chain.pause(ms);
+
+// Chain lifecycle
+chain.toString();
+await chain.perform();
+chain.clearChain();
+```
+
+Examples:
+
+```js
+// Example 1: fill and submit
+const username = document.querySelector("#username");
+const submit = document.querySelector("button[type='submit']");
+
+const chain = aj__webdriver.interaction_chain()
+  .clickElement(username)
+  .sendKeys("john.doe")
+  .pause(150)
+  .clickElement(submit);
+
+console.log(chain.toString());
+await chain.perform();
+chain.clearChain();
+```
+
+```js
+// Example 2: drag source to target
+const source = document.querySelector(".drag-item");
+const target = document.querySelector(".drop-zone");
+
+const chain = aj__webdriver.interaction_chain()
+  .dragAndDrop(source, target);
+
+await chain.perform();
+chain.clearChain();
+```
+
+```js
+// Example 3: Ctrl+A then Delete
+const editor = document.querySelector("#editor");
+
+const chain = aj__webdriver.interaction_chain()
+  .clickElement(editor)
+  .keyDown("CONTROL")
+  .sendKeys("a")
+  .keyUp("CONTROL")
+  .sendKeys("DELETE");
+
+await chain.perform();
+chain.clearChain();
+```
+
 ### Notes
 
 - `aj__webdriver.elem_repo` is internal state used for temporary element tracking.
-- `perform_actions` and `release_actions` are placeholders and not implemented yet.
+- `aj__webdriver.interaction_chain()` is the recommended way to build and execute multi-step interactions.

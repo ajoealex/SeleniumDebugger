@@ -1,5 +1,4 @@
 node_modules/
-web_driver/
 .env
 *.log
 .claude/

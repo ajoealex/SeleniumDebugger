@@ -793,7 +793,10 @@ function createApiServer() {
       await actions.perform();
       res.json({ success: true, performed: steps.length });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({
+        error: e.message,
+        stack: e.stack
+      });
     }
   });
 
@@ -1056,7 +1059,7 @@ async function main() {
 
     // Keep running until user terminates
     console.log("[Main] Press Ctrl+C to stop...");
-    await new Promise(() => {}); // Run forever
+    await new Promise(() => { }); // Run forever
   } catch (error) {
     console.error("Error:", error.message);
   } finally {

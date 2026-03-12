@@ -147,5 +147,5 @@ getNativeFunctions().then(function(native) {
     native: native,
   };
 
-  console.log("aj__dom initialized with native functions");
+  console.debug("[HELPER] aj__dom initialized with native functions in target_id:", window.selenium_debugger_target_id);
 });

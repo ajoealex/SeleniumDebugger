@@ -1,5 +1,5 @@
 window.selenium_debugger_injected = true;
-console.log(`selenium_debugger_injected: true, target_id: ${window.selenium_debugger_target_id}`);
+console.debug(`[INIT] selenium_debugger_injected: true, target_id: ${window.selenium_debugger_target_id}`);
 
 const AJ_API_BASE = (function() {
   if (window.selenium_debugger_api_base) {

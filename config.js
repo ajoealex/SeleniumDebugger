@@ -14,6 +14,9 @@ module.exports = {
   // Clear terminal after this many console.log calls (set to 0 to disable)
   consoleLogClearInterval: 2000,
 
+  // Poll interval for script injection and CSP command processing (milliseconds)
+  injectionPollInterval: 5000,
+
   // URL to load on startup (optional, defaults to https://example.com/)
   url: "https://iframetester.com/?url=https://www.wikipedia.org/",
 
@@ -25,7 +28,11 @@ module.exports = {
         "--disable-web-security",
         "--disable-features=BlockInsecurePrivateNetworkRequests",
         "--disable-site-isolation-trials",
-        "--disable-web-security"]
+        "--disable-web-security",
+        "--allow-running-insecure-content",
+        "--ignore-certificate-errors",
+        "--allow-insecure-localhost",
+      ],
     }
   }
 };

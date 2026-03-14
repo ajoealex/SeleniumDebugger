@@ -15,18 +15,140 @@ const AJ_API_BASE = (function() {
   }
   return "http://localhost:3000";
 })();
+const AJ_FAST_MODE = "fast_mode";
+const AJ_CSP_HANDLING_MODE = "csp_handling_mode";
+const AJ_COMMAND_QUEUE_NAME = "aj__commands_to_execte";
+const AJ_COMMAND_RESULT_QUEUE_NAME = "aj__command_results";
+const AJ_API_MODE_NAME = "aj__api_mode";
+const AJ_RESULT_POLL_INTERVAL_MS = 100;
+
+window[AJ_COMMAND_QUEUE_NAME] = Array.isArray(window[AJ_COMMAND_QUEUE_NAME]) ? window[AJ_COMMAND_QUEUE_NAME] : [];
+window[AJ_COMMAND_RESULT_QUEUE_NAME] = Array.isArray(window[AJ_COMMAND_RESULT_QUEUE_NAME]) ? window[AJ_COMMAND_RESULT_QUEUE_NAME] : [];
+window[AJ_API_MODE_NAME] = window[AJ_API_MODE_NAME] === AJ_CSP_HANDLING_MODE ? AJ_CSP_HANDLING_MODE : AJ_FAST_MODE;
+
+let aj__apiPingChecked = false;
+let aj__queuedCommandSequence = 0;
+let aj__resultPollTimer = null;
+const aj__pendingQueuedCommands = new Map();
+
+function aj__switchApiMode(nextMode, reason) {
+  if (window[AJ_API_MODE_NAME] === nextMode) {
+    return;
+  }
+
+  window[AJ_API_MODE_NAME] = nextMode;
+  console.warn(`[INIT] Switching to ${nextMode}: ${reason}`);
+}
+
+function aj__buildFetchOptions(method, body) {
+  const options = {
+    method,
+    headers: { "Content-Type": "application/json" }
+  };
+
+  if (body !== null) {
+    options.body = JSON.stringify(body);
+  }
+
+  return options;
+}
+
+async function aj__fetchApi(endpoint, method = "GET", body = null) {
+  const res = await fetch(`${AJ_API_BASE}${endpoint}`, aj__buildFetchOptions(method, body));
+  return res.json();
+}
+
+async function aj__ensureApiMode() {
+  if (window[AJ_API_MODE_NAME] === AJ_CSP_HANDLING_MODE || aj__apiPingChecked) {
+    return;
+  }
+
+  try {
+    await aj__fetchApi("/ping");
+    aj__apiPingChecked = true;
+  } catch (error) {
+    aj__apiPingChecked = true;
+    aj__switchApiMode(AJ_CSP_HANDLING_MODE, error?.message || String(error));
+  }
+}
+
+function aj__consumeQueuedCommandResults() {
+  const resultQueue = Array.isArray(window[AJ_COMMAND_RESULT_QUEUE_NAME]) ? window[AJ_COMMAND_RESULT_QUEUE_NAME] : [];
+  if (resultQueue.length === 0) {
+    if (aj__pendingQueuedCommands.size === 0 && aj__resultPollTimer) {
+      clearInterval(aj__resultPollTimer);
+      aj__resultPollTimer = null;
+    }
+    return;
+  }
+
+  const remainingResults = [];
+  for (const result of resultQueue) {
+    const pendingCommand = aj__pendingQueuedCommands.get(result.id);
+    if (!pendingCommand) {
+      remainingResults.push(result);
+      continue;
+    }
+
+    aj__pendingQueuedCommands.delete(result.id);
+    if (result.ok) {
+      pendingCommand.resolve(result.value);
+    } else {
+      pendingCommand.reject(new Error(result.error || "Queued API request failed"));
+    }
+  }
+
+  window[AJ_COMMAND_RESULT_QUEUE_NAME] = remainingResults;
+
+  if (aj__pendingQueuedCommands.size === 0 && aj__resultPollTimer) {
+    clearInterval(aj__resultPollTimer);
+    aj__resultPollTimer = null;
+  }
+}
+
+function aj__ensureQueuedResultPolling() {
+  if (aj__resultPollTimer) {
+    return;
+  }
+
+  aj__resultPollTimer = setInterval(() => {
+    try {
+      aj__consumeQueuedCommandResults();
+    } catch (error) {
+      console.warn(`[INIT] Failed to consume queued API results: ${error?.message || error}`);
+    }
+  }, AJ_RESULT_POLL_INTERVAL_MS);
+}
+
+function aj__queueApiCommand(endpoint, method = "GET", body = null) {
+  const commandId = `${window.selenium_debugger_target_id || "unknown"}:${(++aj__queuedCommandSequence).toString(36)}`;
+
+  return new Promise((resolve, reject) => {
+    aj__pendingQueuedCommands.set(commandId, { resolve, reject });
+    window[AJ_COMMAND_QUEUE_NAME].push({
+      id: commandId,
+      endpoint,
+      method,
+      body
+    });
+    aj__ensureQueuedResultPolling();
+  });
+}
 
 // Helper function to call API
 async function aj__api(endpoint, method = "GET", body = null) {
-  const options = {
-    method,
-    headers: { "Content-Type": "application/json" },
-  };
-  if (body) {
-    options.body = JSON.stringify(body);
+  await aj__ensureApiMode();
+
+  if (window[AJ_API_MODE_NAME] === AJ_CSP_HANDLING_MODE) {
+    return aj__queueApiCommand(endpoint, method, body);
   }
-  const res = await fetch(`${AJ_API_BASE}${endpoint}`, options);
-  return res.json();
+
+  try {
+    return await aj__fetchApi(endpoint, method, body);
+  } catch (error) {
+    aj__switchApiMode(AJ_CSP_HANDLING_MODE, error?.message || String(error));
+    return aj__queueApiCommand(endpoint, method, body);
+  }
 }
 
 function aj__generate_elem_id() {

@@ -1,22 +1,19 @@
-const fs = require("fs");
-const path = require("path");
-const express = require("express");
-const { Builder, By, Button, Key, Origin } = require("selenium-webdriver");
-const chrome = require("selenium-webdriver/chrome");
-const edge = require("selenium-webdriver/edge");
-const firefox = require("selenium-webdriver/firefox");
 const config = require("./config");
 const { CDP } = require("./core/cdp");
+const { createDriver, ensureDriverDirectories } = require("./core/driver");
+const { createApiServer } = require("./api/server");
 
-const DRIVER_DIR = path.join(__dirname, "web_driver");
 const rawConsoleLogClearInterval = Number(config.consoleLogClearInterval);
 const CONSOLE_LOG_CLEAR_INTERVAL = Number.isFinite(rawConsoleLogClearInterval) && rawConsoleLogClearInterval >= 0
   ? Math.floor(rawConsoleLogClearInterval)
   : 2000;
+const rawInjectionPollInterval = Number(config.injectionPollInterval);
+const INJECTION_POLL_INTERVAL = Number.isFinite(rawInjectionPollInterval) && rawInjectionPollInterval > 0
+  ? Math.floor(rawInjectionPollInterval)
+  : 5000;
 const API_HOST = config.apiHost || "127.0.0.1";
 const API_PORT = config.apiPort || 3000;
 const API_BASE_URL = config.apiBaseUrl || `http://${API_HOST === "0.0.0.0" ? "127.0.0.1" : API_HOST}:${API_PORT}`;
-const REQUIRED_DRIVER_FOLDERS = ["linux", "windows", "mac"];
 
 let consoleLogCount = 0;
 const originalConsoleLog = console.log.bind(console);
@@ -32,211 +29,38 @@ console.log = (...args) => {
   originalConsoleLog(...args);
 };
 
-let driver = null;
-let cdp = null;
-let apiServer = null;
-let stopInjectionLoop = null;
-let shutdownInProgress = false;
-
-function getOsFolder() {
-  switch (process.platform) {
-    case "win32":
-      return "windows";
-    case "darwin":
-      return "mac";
-    case "linux":
-      return "linux";
-    default:
-      throw new Error(`Unsupported platform: ${process.platform}`);
-  }
-}
-
-function ensureDriverDirectories() {
-  for (const folderName of REQUIRED_DRIVER_FOLDERS) {
-    fs.mkdirSync(path.join(DRIVER_DIR, folderName), { recursive: true });
-  }
-}
-
-function getDriverPath(browserName) {
-  const osFolder = getOsFolder();
-  const ext = process.platform === "win32" ? ".exe" : "";
-
-  switch (browserName.toLowerCase()) {
-    case "chrome":
-      return path.join(DRIVER_DIR, osFolder, `chromedriver${ext}`);
-    case "edge":
-      return path.join(DRIVER_DIR, osFolder, `msedgedriver${ext}`);
-    case "firefox":
-      return path.join(DRIVER_DIR, osFolder, `geckodriver${ext}`);
-    default:
-      throw new Error(`Unsupported browser: ${browserName}`);
-  }
-}
-
-function buildOptions(browserName, capabilities) {
-  const browserKey = browserName.toLowerCase();
-
-  if (browserKey === "chrome") {
-    const options = new chrome.Options();
-    const chromeOpts = capabilities["goog:chromeOptions"];
-    if (chromeOpts?.args) {
-      options.addArguments(...chromeOpts.args);
-    }
-    return options;
-  }
-
-  if (browserKey === "edge") {
-    const options = new edge.Options();
-    const edgeOpts = capabilities["ms:edgeOptions"];
-    if (edgeOpts?.args) {
-      options.addArguments(...edgeOpts.args);
-    }
-    return options;
-  }
-
-  if (browserKey === "firefox") {
-    const options = new firefox.Options();
-    const firefoxOpts = capabilities["moz:firefoxOptions"];
-    if (firefoxOpts?.args) {
-      options.addArguments(...firefoxOpts.args);
-    }
-    return options;
-  }
-
-  return null;
-}
-
-async function createDriver(browserName, capabilities) {
-  const driverPath = getDriverPath(browserName);
-  const options = buildOptions(browserName, capabilities);
-
-  console.log(`Using driver: ${driverPath}`);
-
-  switch (browserName.toLowerCase()) {
-    case "chrome": {
-      const service = new chrome.ServiceBuilder(driverPath);
-      const builder = new Builder()
-        .forBrowser("chrome")
-        .setChromeService(service);
-      if (options) builder.setChromeOptions(options);
-      return builder.build();
-    }
-    case "edge": {
-      const service = new edge.ServiceBuilder(driverPath);
-      const builder = new Builder()
-        .forBrowser("MicrosoftEdge")
-        .setEdgeService(service);
-      if (options) builder.setEdgeOptions(options);
-      return builder.build();
-    }
-    case "firefox": {
-      const service = new firefox.ServiceBuilder(driverPath);
-      const builder = new Builder()
-        .forBrowser("firefox")
-        .setFirefoxService(service);
-      if (options) builder.setFirefoxOptions(options);
-      return builder.build();
-    }
-    default:
-      throw new Error(`Unsupported browser: ${browserName}`);
-  }
-}
+const state = {
+  driver: null,
+  cdp: null,
+  apiServer: null,
+  stopInjectionLoop: null,
+  shutdownInProgress: false
+};
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function normalizeSendKeysValue(value) {
-  if (!Array.isArray(value)) {
-    return [value];
-  }
-
-  return value.map((item) => {
-    if (
-      typeof item === "string" &&
-      Object.prototype.hasOwnProperty.call(Key, item) &&
-      typeof Key[item] === "string"
-    ) {
-      return Key[item];
-    }
-
-    return item;
-  });
-}
-
-function normalizeComboKeys(keys) {
-  if (!Array.isArray(keys) || keys.length === 0) {
-    throw new Error("keys must be a non-empty array");
-  }
-
-  return keys.map((item) => {
-    if (typeof item !== "string") {
-      throw new Error("each combo key must be a string");
-    }
-
-    if (
-      Object.prototype.hasOwnProperty.call(Key, item) &&
-      typeof Key[item] === "string"
-    ) {
-      return Key[item];
-    }
-
-    if (item.length === 1) {
-      return item;
-    }
-
-    throw new Error(`Invalid combo key: ${item}. Use Selenium Key enum name or single character.`);
-  });
-}
-
-function normalizeInteractionKey(key) {
-  if (
-    typeof key === "string" &&
-    Object.prototype.hasOwnProperty.call(Key, key) &&
-    typeof Key[key] === "string"
-  ) {
-    return Key[key];
-  }
-
-  return key;
-}
-
-function normalizeInteractionKeys(keys) {
-  if (!Array.isArray(keys) || keys.length === 0) {
-    throw new Error("keys must be a non-empty array");
-  }
-
-  return keys.map((key) => normalizeInteractionKey(key));
-}
-
-function toFiniteNumber(value, fieldName) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) {
-    throw new Error(`${fieldName} must be a finite number`);
-  }
-  return num;
-}
-
 async function safelyCloseCurrentSession() {
-  const sessionWasActive = !!driver;
+  const sessionWasActive = !!state.driver;
   if (!sessionWasActive) {
-    if (cdp) {
-      cdp.disconnectAll();
+    if (state.cdp) {
+      state.cdp.disconnectAll();
     }
     return { success: true, alreadyClosed: true };
   }
 
   try {
-    await driver.quit();
-  } catch (e) {
-    const msg = (e && e.message) ? e.message : "";
-    if (!/invalid session id|no such session|session not found/i.test(msg)) {
-      throw e;
+    await state.driver.quit();
+  } catch (error) {
+    const message = error?.message || "";
+    if (!/invalid session id|no such session|session not found/i.test(message)) {
+      throw error;
     }
   } finally {
-    driver = null;
-    if (cdp) {
-      cdp.disconnectAll();
+    state.driver = null;
+    if (state.cdp) {
+      state.cdp.disconnectAll();
     }
   }
 
@@ -244,31 +68,32 @@ async function safelyCloseCurrentSession() {
 }
 
 async function closeApiServer() {
-  if (!apiServer) {
+  if (!state.apiServer) {
     return;
   }
 
   await new Promise((resolve, reject) => {
-    apiServer.close((err) => {
-      if (err) {
-        reject(err);
+    state.apiServer.close((error) => {
+      if (error) {
+        reject(error);
         return;
       }
       resolve();
     });
   });
-  apiServer = null;
+
+  state.apiServer = null;
 }
 
 async function shutdownTool() {
-  if (shutdownInProgress) {
+  if (state.shutdownInProgress) {
     return;
   }
-  shutdownInProgress = true;
+  state.shutdownInProgress = true;
 
-  if (typeof stopInjectionLoop === "function") {
-    stopInjectionLoop();
-    stopInjectionLoop = null;
+  if (typeof state.stopInjectionLoop === "function") {
+    state.stopInjectionLoop();
+    state.stopInjectionLoop = null;
   }
 
   const result = await safelyCloseCurrentSession();
@@ -279,15 +104,19 @@ async function shutdownTool() {
   await closeApiServer();
 }
 
-async function startInjectionLoop(cdpInstance, intervalMs = 10000) {
+async function startInjectionLoop(cdpInstance, intervalMs = INJECTION_POLL_INTERVAL) {
   let running = true;
 
   const loop = async () => {
     while (running) {
       try {
         await cdpInstance.injectIntoAllTargets();
-      } catch (err) {
-        // Silently ignore errors (browser may be navigating)
+        const processedCommandCount = await cdpInstance.processQueuedApiCommands();
+        if (processedCommandCount > 0) {
+          console.log(`[Main] Processed ${processedCommandCount} queued API command(s).`);
+        }
+      } catch (error) {
+        // Silently ignore errors while the browser is navigating.
       }
       await sleep(intervalMs);
     }
@@ -300,729 +129,13 @@ async function startInjectionLoop(cdpInstance, intervalMs = 10000) {
   };
 }
 
-// Switch to the frame with the given targetId using DFS
-async function switchToTargetFrame(targetId) {
-  // Check if already in the correct frame
-  const currentTargetId = await driver.executeScript("return window.selenium_debugger_target_id");
-  if (currentTargetId === targetId) {
-    return true;
-  }
-
-  // Switch to top-level page
-  await driver.switchTo().defaultContent();
-
-  // Check if top-level is the target
-  const topTargetId = await driver.executeScript("return window.selenium_debugger_target_id");
-  if (topTargetId === targetId) {
-    return true;
-  }
-
-  // DFS to find the target frame
-  async function searchFrames() {
-    const iframes = await driver.executeScript("return window.aj__dom ? window.aj__dom.querySelectorAll('iframe') : []");
-
-    for (let i = 0; i < iframes.length; i++) {
-      try {
-        await driver.switchTo().frame(iframes[i]);
-
-        const frameTargetId = await driver.executeScript("return window.selenium_debugger_target_id");
-        if (frameTargetId === targetId) {
-          return true;
-        }
-
-        // Recursively search nested frames
-        if (await searchFrames()) {
-          return true;
-        }
-
-        // Not found in this branch, go back to parent
-        await driver.switchTo().parentFrame();
-      } catch (e) {
-        // Frame might be inaccessible, continue to next
-        try {
-          await driver.switchTo().parentFrame();
-        } catch (e2) {
-          // Ignore
-        }
-      }
-    }
-    return false;
-  }
-
-  return await searchFrames();
-}
-
-// Express API Server
-function createApiServer() {
-  const app = express();
-  app.use(express.json());
-
-  // CORS for browser requests
-  app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Content-Type");
-    res.header("Access-Control-Allow-Private-Network", "true");
-    if (req.method === "OPTIONS") {
-      return res.sendStatus(200);
-    }
-    next();
-  });
-
-  // Request logging
-  app.use((req, res, next) => {
-    const body = Object.keys(req.body || {}).length > 0 ? JSON.stringify(req.body) : "";
-    console.log(`[API] ${req.method} ${req.path}${body ? " " + body : ""}`);
-    next();
-  });
-
-  // Status
-  app.get("/status", (req, res) => {
-    res.json({ ready: !!driver, status: "running" });
-  });
-
-  app.post("/close_session", async (req, res) => {
-    try {
-      if (shutdownInProgress) {
-        res.json({ success: true, shuttingDown: true, alreadyShuttingDown: true });
-        return;
-      }
-
-      res.once("finish", () => {
-        shutdownTool()
-          .then(() => process.exit(0))
-          .catch((e) => {
-            console.error("Failed to shutdown cleanly:", e.message);
-            process.exit(1);
-          });
-      });
-      res.json({ success: true, shuttingDown: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/reinject", async (req, res) => {
-    try {
-      if (!cdp) {
-        throw new Error("CDP is not initialized");
-      }
-      await cdp.injectIntoAllTargets(true);
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Timeouts
-  app.get("/get_timeouts", async (req, res) => {
-    try {
-      const timeouts = await driver.manage().getTimeouts();
-      res.json({ value: timeouts });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/set_timeouts", async (req, res) => {
-    try {
-      const { script, pageLoad, implicit } = req.body;
-      if (script !== undefined) await driver.manage().setTimeouts({ script });
-      if (pageLoad !== undefined) await driver.manage().setTimeouts({ pageLoad });
-      if (implicit !== undefined) await driver.manage().setTimeouts({ implicit });
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Navigation
-  app.post("/navigate_to", async (req, res) => {
-    try {
-      const { url } = req.body;
-      await driver.get(url);
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get("/get_current_url", async (req, res) => {
-    try {
-      const url = await driver.getCurrentUrl();
-      res.json({ value: url });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/back", async (req, res) => {
-    try {
-      await driver.navigate().back();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/forward", async (req, res) => {
-    try {
-      await driver.navigate().forward();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/refresh", async (req, res) => {
-    try {
-      await driver.navigate().refresh();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get("/get_title", async (req, res) => {
-    try {
-      const title = await driver.getTitle();
-      res.json({ value: title });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Window
-  app.get("/get_window_handle", async (req, res) => {
-    try {
-      const handle = await driver.getWindowHandle();
-      res.json({ value: handle });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get("/get_window_handles", async (req, res) => {
-    try {
-      const handles = await driver.getAllWindowHandles();
-      res.json({ value: handles });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.delete("/close_window", async (req, res) => {
-    try {
-      await driver.close();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/switch_to_window", async (req, res) => {
-    try {
-      const { handle } = req.body;
-      await driver.switchTo().window(handle);
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/new_window", async (req, res) => {
-    try {
-      const { type } = req.body;
-      await driver.switchTo().newWindow(type || "tab");
-      const handle = await driver.getWindowHandle();
-      res.json({ value: { handle, type: type || "tab" } });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get("/get_window_rect", async (req, res) => {
-    try {
-      const rect = await driver.manage().window().getRect();
-      res.json({ value: rect });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/set_window_rect", async (req, res) => {
-    try {
-      const { x, y, width, height } = req.body;
-      await driver.manage().window().setRect({ x, y, width, height });
-      const rect = await driver.manage().window().getRect();
-      res.json({ value: rect });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/maximize_window", async (req, res) => {
-    try {
-      await driver.manage().window().maximize();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/minimize_window", async (req, res) => {
-    try {
-      await driver.manage().window().minimize();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/fullscreen_window", async (req, res) => {
-    try {
-      await driver.manage().window().fullscreen();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  function getTargetSelector(elemId) {
-    if (typeof elemId === "string" && elemId.trim()) {
-      return `[aj-target="${elemId}"]`;
-    }
-    return '[data-aj-target="true"],[aj-target]';
-  }
-
-  // Frame
-  app.post("/switch_to_frame", async (req, res) => {
-    try {
-      const { targetId, elemId } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      await driver.switchTo().frame(element);
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/switch_to_parent_frame", async (req, res) => {
-    try {
-      await driver.switchTo().parentFrame();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Element actions using Selenium WebDriver (element identified by aj-target attribute)
-
-  app.post("/element_click", async (req, res) => {
-    try {
-      const { targetId, elemId } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      await element.click();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/element_clear", async (req, res) => {
-    try {
-      const { targetId, elemId } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      await element.clear();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/element_send_keys", async (req, res) => {
-    try {
-      const { targetId, elemId, value } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const keys = normalizeSendKeysValue(value);
-      await element.sendKeys(...keys);
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/element_send_combo_keys", async (req, res) => {
-    try {
-      const { targetId, elemId, keys } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const comboKeys = normalizeComboKeys(keys);
-
-      await element.click();
-      const actions = driver.actions({ async: true });
-      for (const key of comboKeys) {
-        actions.keyDown(key);
-      }
-      for (const key of [...comboKeys].reverse()) {
-        actions.keyUp(key);
-      }
-      await actions.perform();
-
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/interactions", async (req, res) => {
-    try {
-      const { targetId, steps } = req.body;
-      if (!Array.isArray(steps)) {
-        throw new Error("steps must be an array");
-      }
-
-      if (steps.length === 0) {
-        res.json({ success: true, performed: 0 });
-        return;
-      }
-
-      const resolveStepElement = async (elemId) => {
-        if (typeof elemId !== "string" || !elemId.trim()) {
-          throw new Error("Element id must be a non-empty string");
-        }
-        await switchToTargetFrame(targetId);
-        return driver.findElement(By.css(getTargetSelector(elemId)));
-      };
-
-      const actions = driver.actions({ async: true });
-      for (const step of steps) {
-        if (!step || typeof step !== "object") {
-          throw new Error("each step must be an object");
-        }
-
-        switch (step.action) {
-          case "clickCursor":
-            actions.click();
-            break;
-          case "clickElement":
-            actions.click(await resolveStepElement(step.element));
-            break;
-          case "clickElementOffset":
-            actions
-              .move({
-                origin: await resolveStepElement(step.element),
-                x: toFiniteNumber(step.x, "x"),
-                y: toFiniteNumber(step.y, "y")
-              })
-              .click();
-            break;
-          case "doubleClickCursor":
-            actions.doubleClick();
-            break;
-          case "doubleClickElement":
-            actions.doubleClick(await resolveStepElement(step.element));
-            break;
-          case "contextClickCursor":
-            actions.contextClick();
-            break;
-          case "contextClickElement":
-            actions.contextClick(await resolveStepElement(step.element));
-            break;
-          case "moveToElement":
-            actions.move({ origin: await resolveStepElement(step.element) });
-            break;
-          case "moveToElementOffset":
-            actions.move({
-              origin: await resolveStepElement(step.element),
-              x: toFiniteNumber(step.x, "x"),
-              y: toFiniteNumber(step.y, "y")
-            });
-            break;
-          case "moveByOffset":
-            actions.move({
-              origin: Origin.POINTER,
-              x: toFiniteNumber(step.x, "x"),
-              y: toFiniteNumber(step.y, "y")
-            });
-            break;
-          case "clickAndHoldCursor":
-            actions.press(Button.LEFT);
-            break;
-          case "clickAndHoldElement":
-            actions
-              .move({ origin: await resolveStepElement(step.element) })
-              .press(Button.LEFT);
-            break;
-          case "releaseCursor":
-            actions.release(Button.LEFT);
-            break;
-          case "releaseElement":
-            actions
-              .move({ origin: await resolveStepElement(step.element) })
-              .release(Button.LEFT);
-            break;
-          case "dragAndDrop":
-            actions.dragAndDrop(
-              await resolveStepElement(step.source),
-              await resolveStepElement(step.target)
-            );
-            break;
-          case "dragAndDropBy":
-            actions.dragAndDrop(
-              await resolveStepElement(step.source),
-              {
-                x: toFiniteNumber(step.x, "x"),
-                y: toFiniteNumber(step.y, "y")
-              }
-            );
-            break;
-          case "keyDown":
-            actions.keyDown(normalizeInteractionKey(step.key));
-            break;
-          case "keyUp":
-            actions.keyUp(normalizeInteractionKey(step.key));
-            break;
-          case "sendKeys":
-            actions.sendKeys(...normalizeInteractionKeys(step.keys));
-            break;
-          case "pause":
-            actions.pause(toFiniteNumber(step.ms, "ms"));
-            break;
-          default:
-            throw new Error(`Unsupported interaction action: ${step.action}`);
-        }
-      }
-
-      await actions.perform();
-      res.json({ success: true, performed: steps.length });
-    } catch (e) {
-      res.status(500).json({
-        error: e.message,
-        stack: e.stack
-      });
-    }
-  });
-
-  app.post("/get_element_text", async (req, res) => {
-    try {
-      const { targetId, elemId } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const text = await element.getText();
-      res.json({ value: text });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/get_element_attribute", async (req, res) => {
-    try {
-      const { targetId, elemId, name } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const value = await element.getAttribute(name);
-      res.json({ value });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/get_element_property", async (req, res) => {
-    try {
-      const { targetId, elemId, name } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const value = await driver.executeScript(`return arguments[0]['${name}']`, element);
-      res.json({ value });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/get_element_css_value", async (req, res) => {
-    try {
-      const { targetId, elemId, propertyName } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const value = await element.getCssValue(propertyName);
-      res.json({ value });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/is_element_enabled", async (req, res) => {
-    try {
-      const { targetId, elemId } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const value = await element.isEnabled();
-      res.json({ value });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/is_element_selected", async (req, res) => {
-    try {
-      const { targetId, elemId } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const value = await element.isSelected();
-      res.json({ value });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/get_element_tag_name", async (req, res) => {
-    try {
-      const { targetId, elemId } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const value = await element.getTagName();
-      res.json({ value });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/get_element_rect", async (req, res) => {
-    try {
-      const { targetId, elemId } = req.body;
-      await switchToTargetFrame(targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
-      const rect = await element.getRect();
-      res.json({ value: rect });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Document
-  app.get("/get_page_source", async (req, res) => {
-    try {
-      const source = await driver.getPageSource();
-      res.json({ value: source });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Cookies
-  app.get("/get_all_cookies", async (req, res) => {
-    try {
-      const cookies = await driver.manage().getCookies();
-      res.json({ value: cookies });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get("/get_named_cookie/:name", async (req, res) => {
-    try {
-      const { name } = req.params;
-      const cookie = await driver.manage().getCookie(name);
-      res.json({ value: cookie });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/add_cookie", async (req, res) => {
-    try {
-      const { cookie } = req.body;
-      await driver.manage().addCookie(cookie);
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.delete("/delete_cookie/:name", async (req, res) => {
-    try {
-      const { name } = req.params;
-      await driver.manage().deleteCookie(name);
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.delete("/delete_all_cookies", async (req, res) => {
-    try {
-      await driver.manage().deleteAllCookies();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Alerts
-  app.post("/dismiss_alert", async (req, res) => {
-    try {
-      await driver.switchTo().alert().dismiss();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/accept_alert", async (req, res) => {
-    try {
-      await driver.switchTo().alert().accept();
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get("/get_alert_text", async (req, res) => {
-    try {
-      const text = await driver.switchTo().alert().getText();
-      res.json({ value: text });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/send_alert_text", async (req, res) => {
-    try {
-      const { text } = req.body;
-      await driver.switchTo().alert().sendKeys(text);
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Screenshot
-  app.get("/take_screenshot", async (req, res) => {
-    try {
-      const screenshot = await driver.takeScreenshot();
-      res.json({ value: screenshot });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Execute script
-  app.post("/execute_script", async (req, res) => {
-    try {
-      const { script, args } = req.body;
-      const result = await driver.executeScript(script, ...(args || []));
-      res.json({ value: result });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  return app;
+function createServerContext() {
+  return {
+    getDriver: () => state.driver,
+    getCdp: () => state.cdp,
+    isShutdownInProgress: () => state.shutdownInProgress,
+    shutdownTool
+  };
 }
 
 async function main() {
@@ -1031,45 +144,42 @@ async function main() {
 
   ensureDriverDirectories();
 
-  cdp = new CDP();
-  cdp.apiBaseUrl = API_BASE_URL;
+  state.cdp = new CDP();
+  state.cdp.apiBaseUrl = API_BASE_URL;
 
   console.log(`Launching ${browserName}...`);
   console.log(`Platform: ${process.platform}`);
 
   try {
     console.log("Creating driver...");
-    driver = await createDriver(browserName, capabilities);
+    state.driver = await createDriver(browserName, capabilities);
     console.log(`${browserName} launched successfully.`);
 
-    // Get debugging port from driver capabilities (set automatically by Selenium)
-    const driverCaps = await driver.getCapabilities();
-    const chromeOptions = driverCaps.get("goog:chromeOptions");
+    const driverCaps = await state.driver.getCapabilities();
+    const chromeOptions = driverCaps.get("goog:chromeOptions") || driverCaps.get("ms:edgeOptions") || {};
     if (!chromeOptions?.debuggerAddress) {
       console.error("Error: Could not get remote debugging port from driver capabilities");
       process.exit(1);
     }
+
     const debuggingPort = parseInt(chromeOptions.debuggerAddress.split(":")[1], 10);
-    cdp.debuggingPort = debuggingPort;
+    state.cdp.debuggingPort = debuggingPort;
     console.log(`Remote debugging port: ${debuggingPort}`);
 
-    // Start API server
-    const app = createApiServer();
-    apiServer = app.listen(API_PORT, API_HOST, () => {
+    const app = createApiServer(createServerContext());
+    state.apiServer = app.listen(API_PORT, API_HOST, () => {
       console.log(`[API] Server listening on ${API_BASE_URL} (bind: ${API_HOST}:${API_PORT})`);
     });
 
     const url = config.url || "https://example.com/";
     console.log(`Navigating to: ${url}`);
-    driver.navigate().to(url);
+    state.driver.navigate().to(url);
 
-    // Start continuous injection loop
     console.log("[Main] Starting injection loop...");
-    stopInjectionLoop = await startInjectionLoop(cdp);
+    state.stopInjectionLoop = await startInjectionLoop(state.cdp);
 
-    // Keep running until user terminates
     console.log("[Main] Press Ctrl+C to stop...");
-    await new Promise(() => { }); // Run forever
+    await new Promise(() => {});
   } catch (error) {
     console.error("Error:", error.message);
   } finally {

@@ -25,7 +25,11 @@ module.exports = {
         "--disable-web-security",
         "--disable-features=BlockInsecurePrivateNetworkRequests",
         "--disable-site-isolation-trials",
-        "--disable-web-security"]
+        "--disable-web-security",
+        "--allow-running-insecure-content",
+        "--ignore-certificate-errors",
+        "--allow-insecure-localhost",
+      ],
     }
   }
 };

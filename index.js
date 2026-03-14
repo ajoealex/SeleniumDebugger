@@ -1,6 +1,7 @@
+const fs = require("fs");
 const path = require("path");
 const express = require("express");
-const { Builder, By, Key } = require("selenium-webdriver");
+const { Builder, By, Button, Key, Origin } = require("selenium-webdriver");
 const chrome = require("selenium-webdriver/chrome");
 const edge = require("selenium-webdriver/edge");
 const firefox = require("selenium-webdriver/firefox");
@@ -15,6 +16,7 @@ const CONSOLE_LOG_CLEAR_INTERVAL = Number.isFinite(rawConsoleLogClearInterval) &
 const API_HOST = config.apiHost || "127.0.0.1";
 const API_PORT = config.apiPort || 3000;
 const API_BASE_URL = config.apiBaseUrl || `http://${API_HOST === "0.0.0.0" ? "127.0.0.1" : API_HOST}:${API_PORT}`;
+const REQUIRED_DRIVER_FOLDERS = ["linux", "windows", "mac"];
 
 let consoleLogCount = 0;
 const originalConsoleLog = console.log.bind(console);
@@ -41,11 +43,17 @@ function getOsFolder() {
     case "win32":
       return "windows";
     case "darwin":
-      return "macos";
+      return "mac";
     case "linux":
       return "linux";
     default:
       throw new Error(`Unsupported platform: ${process.platform}`);
+  }
+}
+
+function ensureDriverDirectories() {
+  for (const folderName of REQUIRED_DRIVER_FOLDERS) {
+    fs.mkdirSync(path.join(DRIVER_DIR, folderName), { recursive: true });
   }
 }
 
@@ -179,6 +187,34 @@ function normalizeComboKeys(keys) {
 
     throw new Error(`Invalid combo key: ${item}. Use Selenium Key enum name or single character.`);
   });
+}
+
+function normalizeInteractionKey(key) {
+  if (
+    typeof key === "string" &&
+    Object.prototype.hasOwnProperty.call(Key, key) &&
+    typeof Key[key] === "string"
+  ) {
+    return Key[key];
+  }
+
+  return key;
+}
+
+function normalizeInteractionKeys(keys) {
+  if (!Array.isArray(keys) || keys.length === 0) {
+    throw new Error("keys must be a non-empty array");
+  }
+
+  return keys.map((key) => normalizeInteractionKey(key));
+}
+
+function toFiniteNumber(value, fieldName) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    throw new Error(`${fieldName} must be a finite number`);
+  }
+  return num;
 }
 
 async function safelyCloseCurrentSession() {
@@ -643,6 +679,135 @@ function createApiServer() {
     }
   });
 
+  app.post("/interactions", async (req, res) => {
+    try {
+      const { targetId, steps } = req.body;
+      if (!Array.isArray(steps)) {
+        throw new Error("steps must be an array");
+      }
+
+      if (steps.length === 0) {
+        res.json({ success: true, performed: 0 });
+        return;
+      }
+
+      const resolveStepElement = async (elemId) => {
+        if (typeof elemId !== "string" || !elemId.trim()) {
+          throw new Error("Element id must be a non-empty string");
+        }
+        await switchToTargetFrame(targetId);
+        return driver.findElement(By.css(getTargetSelector(elemId)));
+      };
+
+      const actions = driver.actions({ async: true });
+      for (const step of steps) {
+        if (!step || typeof step !== "object") {
+          throw new Error("each step must be an object");
+        }
+
+        switch (step.action) {
+          case "clickCursor":
+            actions.click();
+            break;
+          case "clickElement":
+            actions.click(await resolveStepElement(step.element));
+            break;
+          case "clickElementOffset":
+            actions
+              .move({
+                origin: await resolveStepElement(step.element),
+                x: toFiniteNumber(step.x, "x"),
+                y: toFiniteNumber(step.y, "y")
+              })
+              .click();
+            break;
+          case "doubleClickCursor":
+            actions.doubleClick();
+            break;
+          case "doubleClickElement":
+            actions.doubleClick(await resolveStepElement(step.element));
+            break;
+          case "contextClickCursor":
+            actions.contextClick();
+            break;
+          case "contextClickElement":
+            actions.contextClick(await resolveStepElement(step.element));
+            break;
+          case "moveToElement":
+            actions.move({ origin: await resolveStepElement(step.element) });
+            break;
+          case "moveToElementOffset":
+            actions.move({
+              origin: await resolveStepElement(step.element),
+              x: toFiniteNumber(step.x, "x"),
+              y: toFiniteNumber(step.y, "y")
+            });
+            break;
+          case "moveByOffset":
+            actions.move({
+              origin: Origin.POINTER,
+              x: toFiniteNumber(step.x, "x"),
+              y: toFiniteNumber(step.y, "y")
+            });
+            break;
+          case "clickAndHoldCursor":
+            actions.press(Button.LEFT);
+            break;
+          case "clickAndHoldElement":
+            actions
+              .move({ origin: await resolveStepElement(step.element) })
+              .press(Button.LEFT);
+            break;
+          case "releaseCursor":
+            actions.release(Button.LEFT);
+            break;
+          case "releaseElement":
+            actions
+              .move({ origin: await resolveStepElement(step.element) })
+              .release(Button.LEFT);
+            break;
+          case "dragAndDrop":
+            actions.dragAndDrop(
+              await resolveStepElement(step.source),
+              await resolveStepElement(step.target)
+            );
+            break;
+          case "dragAndDropBy":
+            actions.dragAndDrop(
+              await resolveStepElement(step.source),
+              {
+                x: toFiniteNumber(step.x, "x"),
+                y: toFiniteNumber(step.y, "y")
+              }
+            );
+            break;
+          case "keyDown":
+            actions.keyDown(normalizeInteractionKey(step.key));
+            break;
+          case "keyUp":
+            actions.keyUp(normalizeInteractionKey(step.key));
+            break;
+          case "sendKeys":
+            actions.sendKeys(...normalizeInteractionKeys(step.keys));
+            break;
+          case "pause":
+            actions.pause(toFiniteNumber(step.ms, "ms"));
+            break;
+          default:
+            throw new Error(`Unsupported interaction action: ${step.action}`);
+        }
+      }
+
+      await actions.perform();
+      res.json({ success: true, performed: steps.length });
+    } catch (e) {
+      res.status(500).json({
+        error: e.message,
+        stack: e.stack
+      });
+    }
+  });
+
   app.post("/get_element_text", async (req, res) => {
     try {
       const { targetId, elemId } = req.body;
@@ -864,6 +1029,8 @@ async function main() {
   const browserName = config.browser;
   const capabilities = config.capabilities || {};
 
+  ensureDriverDirectories();
+
   cdp = new CDP();
   cdp.apiBaseUrl = API_BASE_URL;
 
@@ -902,7 +1069,7 @@ async function main() {
 
     // Keep running until user terminates
     console.log("[Main] Press Ctrl+C to stop...");
-    await new Promise(() => {}); // Run forever
+    await new Promise(() => { }); // Run forever
   } catch (error) {
     console.error("Error:", error.message);
   } finally {

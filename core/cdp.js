@@ -164,6 +164,9 @@ class CDP {
 
     const targets = await this.getPagesAndIframes();
     console.log(`[CDP] Found ${targets.length} target(s) to inject`);
+    let injectedTargetCount = 0;
+    let skippedTargetCount = 0;
+    let failedTargetCount = 0;
 
     for (const target of targets) {
       try {
@@ -171,6 +174,7 @@ class CDP {
 
         if (!force && (await this.isAlreadyInjected(target.id))) {
           console.log(`[CDP] Skipping ${target.type}: ${target.title} (already injected)`);
+          skippedTargetCount += 1;
           continue;
         }
 
@@ -186,10 +190,36 @@ class CDP {
             expression: script.content,
           });
           console.log(`[CDP] Injected "${script.name}" into ${target.type}: ${target.title}`);
+          await this.sendCommand(target.id, "Runtime.evaluate", {
+            expression: 'console.debug("[SeleniumDebugger] All scripts injected into ' + target.type + ': ' + target.id + ' (' + target.title + ')");',
+          });
         }
+        injectedTargetCount += 1;
       } catch (err) {
+        failedTargetCount += 1;
         console.error(`[CDP] Failed to inject into ${target.id}: ${err.message}`);
       }
+    }
+
+    if (injectedTargetCount > 0 && failedTargetCount === 0) {
+      const message = "[SeleniumDebugger] Script injected into all pages and iframes. Start debugging!";
+      console.log(message);
+      for (const target of targets) {
+        try {
+          await this.sendCommand(target.id, "Runtime.evaluate", {
+            expression: `if (window.top === window) console.info(${JSON.stringify(message)});`,
+          });
+        } catch (err) {
+          // Ignore per-target completion log failures
+        }
+      }
+      return;
+    }
+
+    if (failedTargetCount > 0) {
+      console.warn(
+        `[CDP] Injection pass finished with failures (injected: ${injectedTargetCount}, skipped: ${skippedTargetCount}, failed: ${failedTargetCount})`
+      );
     }
   }
 }

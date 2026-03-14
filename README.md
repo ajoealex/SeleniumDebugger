@@ -10,11 +10,12 @@ SeleniumDebugger is an interactive Selenium sandbox for a live browser session. 
 
 1. Starts a Selenium-controlled browser (Chrome/Edge/Firefox).
 2. Runs a local Express API that maps calls to Selenium WebDriver commands.
-3. Injects helper scripts into page/iframe targets.
+3. Injects helper scripts into page/iframe targets and refreshes those injections on a configurable poll interval.
 4. Exposes browser-side APIs like:
    Navigation/window/frame/element methods
    Keyboard and mouse actions
    `interaction_chain()` for multi-step action sequences
+5. Falls back to queued CDP-backed command processing when page CSP blocks direct browser-to-API requests.
 
 When you call methods from DevTools console, those calls are executed through Selenium on the same live page.
 
@@ -34,28 +35,51 @@ When you call methods from DevTools console, those calls are executed through Se
 4. Observe page and console behavior.
 5. Convert the working sequence into stable test code in your automation suite.
 
+## New on This Branch
+
+- Adds a dedicated Express API server and route layer for live Selenium commands from the browser console.
+- Adds automatic script injection across pages and iframes, including reinjection support for newly loaded targets.
+- Adds `interaction_chain()` / `InteractionChain` for multi-step mouse and keyboard flows.
+- Adds automatic CSP-safe command handling: if direct `fetch()` calls are blocked, commands are queued in the page and replayed through the Node-side CDP loop.
+- Adds more reliable nested iframe targeting and element lookup for injected commands.
+- Adds `injectionPollInterval` and `url` config options for injection timing and initial navigation.
+- Adds automatic creation of `web_driver/windows`, `web_driver/linux`, and `web_driver/mac` directories.
+- Adds `start-app.bat` and `start-app.sh` launcher scripts that verify Node/npm, install dependencies when needed, and start the app.
+
 ## Installation
+
+### Install dependencies manually
 
 ```bash
 npm install
 ```
 
-### ChromeDriver setup (manual)
+### Driver setup (manual)
 
-- You must manually download ChromeDriver that matches your installed Chrome browser version.
-- Place the downloaded driver in the project `web_driver` folder for your OS:
-  - Windows: `web_driver/windows/chromedriver.exe`
-  - macOS: `web_driver/macos/chromedriver`
-  - Linux: `web_driver/linux/chromedriver`
-- Download helper: https://ajoealex.github.io/chromedriver-download-helper/
+- On startup, SeleniumDebugger creates `web_driver/windows`, `web_driver/linux`, and `web_driver/mac` automatically if they do not already exist.
+- You must manually download the driver binary that matches the browser you want to launch.
+- Place the driver in the project `web_driver` folder for your OS:
+  - Chrome: `web_driver/windows/chromedriver.exe`, `web_driver/mac/chromedriver`, `web_driver/linux/chromedriver`
+  - Edge: `web_driver/windows/msedgedriver.exe`, `web_driver/mac/msedgedriver`, `web_driver/linux/msedgedriver`
+  - Firefox: `web_driver/windows/geckodriver.exe`, `web_driver/mac/geckodriver`, `web_driver/linux/geckodriver`
+- Chrome download helper: https://ajoealex.github.io/chromedriver-download-helper/
 
 ## Usage
+
+### Start with npm
 
 ```bash
 npm start
 ```
 
 Server host/interface and port are configurable from `config.js`.
+
+### Start with launcher scripts
+
+- Windows: `start-app.bat`
+- macOS/Linux: `sh start-app.sh`
+
+Both launcher scripts check that `node` and `npm` are available, run `npm install` when `node_modules` is missing, and then run `npm run start`.
 
 ## Configuration
 
@@ -69,6 +93,8 @@ module.exports = {
   apiPort: 3000, // server port
   // apiBaseUrl: "http://127.0.0.1:3000", // optional base URL used by injected scripts
   consoleLogClearInterval: 2000, // clear terminal every N console.log calls (0 disables)
+  injectionPollInterval: 5000, // reinjection and queued-command polling interval (ms)
+  url: "https://example.com/", // optional startup URL
 };
 ```
 
@@ -78,6 +104,8 @@ Notes:
 - `apiBaseUrl` is optional and used by injected browser scripts for API calls.
 - If `apiBaseUrl` is omitted and `apiHost` is `0.0.0.0`, injected scripts use `http://127.0.0.1:<apiPort>`.
 - `consoleLogClearInterval` controls periodic terminal clear based on `console.log` count.
+- `injectionPollInterval` controls how often SeleniumDebugger reinjects scripts and processes queued API commands for CSP-restricted pages.
+- `url` controls the first page opened after the browser launches.
 
 ### Chrome
 
@@ -213,6 +241,15 @@ module.exports = {
 ## Injected Browser API (`window.aj__webdriver`)
 
 Scripts from the `common/` folder are injected into page/iframe targets. After injection, helper methods are available in the browser context via `window.aj__webdriver`.
+
+The injected API uses direct browser `fetch()` calls when the page allows them. On pages with restrictive Content Security Policy rules, SeleniumDebugger automatically switches to a queued command mode that is processed through the Node-side CDP loop. The `aj__webdriver` API stays the same in both modes.
+
+To use the examples below:
+
+1. In the browser, right-click the element you want to test and choose `Inspect` to open DevTools.
+2. Go to the DevTools `Console`.
+3. Execute the JavaScript snippets below as needed for that element.
+4. If you inspected the target element first, you can often use `$0` in the console as the currently selected element.
 
 All API methods return a Promise unless noted.
 

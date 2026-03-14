@@ -470,7 +470,35 @@ chain.clearChain();
 ```
 
 ```js
-// Example 3: Ctrl+A then Delete
+// Example 3: HTML5 drag-and-drop page with deliberate movement and pauses
+// Site to test:
+// https://ajoealex.github.io/static-sites/apps/drag-and-drop/modes/html5_drag_and_drop.html
+// Open DevTools, then run this in the Console.
+src = document.querySelector("div.employee");
+dest = document.querySelector("div.shift");
+
+chain = aj__webdriver.interaction_chain()
+  .moveToElement(src)
+  .clickAndHold()
+  .pause(1000)
+  .moveByOffset(10, 10)
+  .pause(200)
+  .moveByOffset(-10, -10)
+  .pause(200)
+  .moveToElement(dest)
+  .pause(1000)
+  .moveByOffset(10, 10)
+  .pause(200)
+  .moveByOffset(-10, -10)
+  .pause(200)
+  .release();
+
+await chain.perform();
+chain.clearChain();
+```
+
+```js
+// Example 4: Ctrl+A then Delete
 const editor = document.querySelector("#editor");
 
 const chain = aj__webdriver.interaction_chain()

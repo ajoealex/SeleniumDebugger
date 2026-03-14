@@ -7,6 +7,10 @@ const rawConsoleLogClearInterval = Number(config.consoleLogClearInterval);
 const CONSOLE_LOG_CLEAR_INTERVAL = Number.isFinite(rawConsoleLogClearInterval) && rawConsoleLogClearInterval >= 0
   ? Math.floor(rawConsoleLogClearInterval)
   : 2000;
+const rawInjectionPollInterval = Number(config.injectionPollInterval);
+const INJECTION_POLL_INTERVAL = Number.isFinite(rawInjectionPollInterval) && rawInjectionPollInterval > 0
+  ? Math.floor(rawInjectionPollInterval)
+  : 5000;
 const API_HOST = config.apiHost || "127.0.0.1";
 const API_PORT = config.apiPort || 3000;
 const API_BASE_URL = config.apiBaseUrl || `http://${API_HOST === "0.0.0.0" ? "127.0.0.1" : API_HOST}:${API_PORT}`;
@@ -100,13 +104,17 @@ async function shutdownTool() {
   await closeApiServer();
 }
 
-async function startInjectionLoop(cdpInstance, intervalMs = 10000) {
+async function startInjectionLoop(cdpInstance, intervalMs = INJECTION_POLL_INTERVAL) {
   let running = true;
 
   const loop = async () => {
     while (running) {
       try {
         await cdpInstance.injectIntoAllTargets();
+        const processedCommandCount = await cdpInstance.processQueuedApiCommands();
+        if (processedCommandCount > 0) {
+          console.log(`[Main] Processed ${processedCommandCount} queued API command(s).`);
+        }
       } catch (error) {
         // Silently ignore errors while the browser is navigating.
       }

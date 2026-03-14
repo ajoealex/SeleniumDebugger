@@ -1,9 +1,12 @@
 const WebSocket = require("ws");
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 
 const COMMON_DIR = path.join(__dirname, "..", "common");
+const COMMAND_QUEUE_NAME = "aj__commands_to_execte";
+const COMMAND_RESULT_QUEUE_NAME = "aj__command_results";
 
 class CDP {
   constructor() {
@@ -153,6 +156,141 @@ class CDP {
       returnByValue: true,
     });
     return result.result?.value === true;
+  }
+
+  async readQueuedCommands(targetId) {
+    const result = await this.sendCommand(targetId, "Runtime.evaluate", {
+      expression: `(() => {
+        return Array.isArray(window.${COMMAND_QUEUE_NAME}) ? window.${COMMAND_QUEUE_NAME}.slice() : [];
+      })()`,
+      returnByValue: true
+    });
+
+    return Array.isArray(result.result?.value) ? result.result.value : [];
+  }
+
+  async clearProcessedQueuedCommands(targetId, commandIds) {
+    if (!Array.isArray(commandIds) || commandIds.length === 0) {
+      return;
+    }
+
+    await this.sendCommand(targetId, "Runtime.evaluate", {
+      expression: `(() => {
+        const processedIds = new Set(${JSON.stringify(commandIds)});
+        if (!Array.isArray(window.${COMMAND_QUEUE_NAME})) {
+          window.${COMMAND_QUEUE_NAME} = [];
+          return;
+        }
+        window.${COMMAND_QUEUE_NAME} = window.${COMMAND_QUEUE_NAME}.filter((command) => !processedIds.has(command.id));
+      })()`
+    });
+  }
+
+  async appendQueuedCommandResults(targetId, results) {
+    if (!Array.isArray(results) || results.length === 0) {
+      return;
+    }
+
+    await this.sendCommand(targetId, "Runtime.evaluate", {
+      expression: `(() => {
+        if (!Array.isArray(window.${COMMAND_RESULT_QUEUE_NAME})) {
+          window.${COMMAND_RESULT_QUEUE_NAME} = [];
+        }
+        window.${COMMAND_RESULT_QUEUE_NAME}.push(...${JSON.stringify(results)});
+      })()`
+    });
+  }
+
+  async performApiRequest(endpoint, method = "GET", body = null) {
+    const requestUrl = new URL(endpoint, this.apiBaseUrl || "http://localhost:3000");
+    const client = requestUrl.protocol === "https:" ? https : http;
+    const payload = body === null ? null : JSON.stringify(body);
+
+    return new Promise((resolve, reject) => {
+      const req = client.request(requestUrl, {
+        method,
+        headers: {
+          Accept: "application/json",
+          ...(payload
+            ? {
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(payload)
+              }
+            : {})
+        }
+      }, (res) => {
+        let raw = "";
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          if (!raw) {
+            resolve(null);
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(raw));
+          } catch (error) {
+            resolve(raw);
+          }
+        });
+      });
+
+      req.on("error", reject);
+
+      if (payload) {
+        req.write(payload);
+      }
+
+      req.end();
+    });
+  }
+
+  async processQueuedApiCommands() {
+    const targets = await this.getPagesAndIframes();
+    let processedCommandCount = 0;
+
+    for (const target of targets) {
+      try {
+        await this.connect(target);
+
+        if (!(await this.isAlreadyInjected(target.id))) {
+          continue;
+        }
+
+        const queuedCommands = await this.readQueuedCommands(target.id);
+        if (queuedCommands.length === 0) {
+          continue;
+        }
+
+        const results = [];
+        for (const command of queuedCommands) {
+          try {
+            const value = await this.performApiRequest(command.endpoint, command.method || "GET", command.body ?? null);
+            results.push({
+              id: command.id,
+              ok: true,
+              value
+            });
+          } catch (error) {
+            results.push({
+              id: command.id,
+              ok: false,
+              error: error.message
+            });
+          }
+          processedCommandCount += 1;
+        }
+
+        await this.appendQueuedCommandResults(target.id, results);
+        await this.clearProcessedQueuedCommands(target.id, queuedCommands.map((command) => command.id));
+      } catch (error) {
+        console.warn(`[CDP] Failed to process queued commands for ${target.id}: ${error.message}`);
+      }
+    }
+
+    return processedCommandCount;
   }
 
   async injectIntoAllTargets(force = false) {

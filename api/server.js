@@ -1,5 +1,4 @@
 const express = require("express");
-const { registerRoutes } = require("./routes/api_routes");
 
 function registerCommonMiddleware(app) {
   app.use(express.json());
@@ -47,6 +46,7 @@ function getRequiredCdp(getCdp) {
 
 function createApiServer(context) {
   const app = express();
+  const { registerRoutes } = require("./routes/api_routes");
 
   registerCommonMiddleware(app);
   registerRoutes(app, context);

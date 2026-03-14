@@ -14,6 +14,9 @@ module.exports = {
   // Clear terminal after this many console.log calls (set to 0 to disable)
   consoleLogClearInterval: 2000,
 
+  // Poll interval for script injection and CSP command processing (milliseconds)
+  injectionPollInterval: 5000,
+
   // URL to load on startup (optional, defaults to https://example.com/)
   url: "https://iframetester.com/?url=https://www.wikipedia.org/",
 

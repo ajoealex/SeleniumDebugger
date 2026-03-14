@@ -76,6 +76,15 @@ function toFiniteNumber(value, fieldName) {
 async function findTargetElement(context, targetId, elemId) {
   const driver = getRequiredDriver(context.getDriver);
   await switchToTargetFrame(context.getDriver, targetId);
+  const repoElement = await driver.executeScript(`
+    const repo = window.aj__webdriver && window.aj__webdriver.elem_repo;
+    return repo ? (repo[arguments[0]] || null) : null;
+  `, elemId);
+
+  if (repoElement) {
+    return repoElement;
+  }
+
   return driver.findElement(By.css(getTargetSelector(elemId)));
 }
 
@@ -320,7 +329,7 @@ function registerRoutes(app, context) {
       const driver = getRequiredDriver(context.getDriver);
       const { targetId, elemId } = req.body;
       await switchToTargetFrame(context.getDriver, targetId);
-      const element = await driver.findElement(By.css(getTargetSelector(elemId)));
+      const element = await findTargetElement(context, targetId, elemId);
       await driver.switchTo().frame(element);
       res.json({ success: true });
     } catch (error) {
@@ -412,8 +421,7 @@ function registerRoutes(app, context) {
         if (typeof elemId !== "string" || !elemId.trim()) {
           throw new Error("Element id must be a non-empty string");
         }
-        await switchToTargetFrame(context.getDriver, targetId);
-        return driver.findElement(By.css(getTargetSelector(elemId)));
+        return findTargetElement(context, targetId, elemId);
       };
 
       const actions = driver.actions({ async: true });

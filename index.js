@@ -1,3 +1,4 @@
+const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const { Builder, By, Button, Key, Origin } = require("selenium-webdriver");
@@ -15,6 +16,7 @@ const CONSOLE_LOG_CLEAR_INTERVAL = Number.isFinite(rawConsoleLogClearInterval) &
 const API_HOST = config.apiHost || "127.0.0.1";
 const API_PORT = config.apiPort || 3000;
 const API_BASE_URL = config.apiBaseUrl || `http://${API_HOST === "0.0.0.0" ? "127.0.0.1" : API_HOST}:${API_PORT}`;
+const REQUIRED_DRIVER_FOLDERS = ["linux", "windows", "mac"];
 
 let consoleLogCount = 0;
 const originalConsoleLog = console.log.bind(console);
@@ -41,11 +43,17 @@ function getOsFolder() {
     case "win32":
       return "windows";
     case "darwin":
-      return "macos";
+      return "mac";
     case "linux":
       return "linux";
     default:
       throw new Error(`Unsupported platform: ${process.platform}`);
+  }
+}
+
+function ensureDriverDirectories() {
+  for (const folderName of REQUIRED_DRIVER_FOLDERS) {
+    fs.mkdirSync(path.join(DRIVER_DIR, folderName), { recursive: true });
   }
 }
 
@@ -1020,6 +1028,8 @@ function createApiServer() {
 async function main() {
   const browserName = config.browser;
   const capabilities = config.capabilities || {};
+
+  ensureDriverDirectories();
 
   cdp = new CDP();
   cdp.apiBaseUrl = API_BASE_URL;

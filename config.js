@@ -23,7 +23,9 @@ module.exports = {
       args: [
         "--start-maximized",
         "--disable-web-security",
-        "--disable-features=BlockInsecurePrivateNetworkRequests"]
+        "--disable-features=BlockInsecurePrivateNetworkRequests",
+        "--disable-site-isolation-trials",
+        "--disable-web-security"]
     }
   }
 };

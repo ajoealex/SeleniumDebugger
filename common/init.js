@@ -21,6 +21,7 @@ const AJ_COMMAND_QUEUE_NAME = "aj__commands_to_execte";
 const AJ_COMMAND_RESULT_QUEUE_NAME = "aj__command_results";
 const AJ_API_MODE_NAME = "aj__api_mode";
 const AJ_RESULT_POLL_INTERVAL_MS = 100;
+const AJ_HELPER_FRAME_ID = "aj__helper_frame";
 
 window[AJ_COMMAND_QUEUE_NAME] = Array.isArray(window[AJ_COMMAND_QUEUE_NAME]) ? window[AJ_COMMAND_QUEUE_NAME] : [];
 window[AJ_COMMAND_RESULT_QUEUE_NAME] = Array.isArray(window[AJ_COMMAND_RESULT_QUEUE_NAME]) ? window[AJ_COMMAND_RESULT_QUEUE_NAME] : [];
@@ -209,9 +210,12 @@ class InteractionChain {
     this.allocatedElemIds = new Set();
   }
 
+  isElementObject(value) {
+    return !!value && typeof value === "object" && value.nodeType === Node.ELEMENT_NODE;
+  }
+
   resolveElementRef(value) {
-    const isElementObject = !!value && typeof value === "object" && value.nodeType === Node.ELEMENT_NODE;
-    if (!isElementObject) {
+    if (!this.isElementObject(value)) {
       throw new Error("Element must be a DOM element object");
     }
 
@@ -229,6 +233,39 @@ class InteractionChain {
     return elemId;
   }
 
+  resolveOptionalElementAction(argsLike, actionWithElement, actionWithoutElement) {
+    const args = Array.from(argsLike);
+    if (args.length === 1) {
+      return {
+        action: actionWithElement,
+        element: this.resolveElementRef(args[0])
+      };
+    }
+
+    if (args.length > 1) {
+      throw new Error(`Method accepts either no arguments or a single DOM element for ${actionWithoutElement}`);
+    }
+
+    return { action: actionWithoutElement };
+  }
+
+  normalizeSendKeysArgs(argsLike) {
+    const args = Array.from(argsLike);
+    if (args.length > 0 && this.isElementObject(args[0])) {
+      const [element, ...rest] = args;
+      const keys = rest.length === 1 && Array.isArray(rest[0]) ? rest[0] : rest;
+      return {
+        element: this.resolveElementRef(element),
+        keys
+      };
+    }
+
+    return {
+      element: null,
+      keys: args.length === 1 && Array.isArray(args[0]) ? args[0] : args
+    };
+  }
+
   toString() {
     return JSON.stringify(this.steps);
   }
@@ -243,17 +280,13 @@ class InteractionChain {
   }
 
   /* CLICK */
-  click() {
-    this.steps.push({ action: "clickCursor" });
+  click(element) {
+    this.steps.push(this.resolveOptionalElementAction(arguments, "clickElement", "clickCursor"));
     return this;
   }
 
   clickElement(element) {
-    this.steps.push({
-      action: "clickElement",
-      element: this.resolveElementRef(element)
-    });
-    return this;
+    return this.click(element);
   }
 
   clickElementOffset(element, x, y) {
@@ -267,31 +300,23 @@ class InteractionChain {
   }
 
   /* DOUBLE CLICK */
-  doubleClick() {
-    this.steps.push({ action: "doubleClickCursor" });
+  doubleClick(element) {
+    this.steps.push(this.resolveOptionalElementAction(arguments, "doubleClickElement", "doubleClickCursor"));
     return this;
   }
 
   doubleClickElement(element) {
-    this.steps.push({
-      action: "doubleClickElement",
-      element: this.resolveElementRef(element)
-    });
-    return this;
+    return this.doubleClick(element);
   }
 
   /* CONTEXT CLICK */
-  contextClick() {
-    this.steps.push({ action: "contextClickCursor" });
+  contextClick(element) {
+    this.steps.push(this.resolveOptionalElementAction(arguments, "contextClickElement", "contextClickCursor"));
     return this;
   }
 
   contextClickElement(element) {
-    this.steps.push({
-      action: "contextClickElement",
-      element: this.resolveElementRef(element)
-    });
-    return this;
+    return this.contextClick(element);
   }
 
   /* MOVE */
@@ -323,31 +348,23 @@ class InteractionChain {
   }
 
   /* HOLD */
-  clickAndHold() {
-    this.steps.push({ action: "clickAndHoldCursor" });
+  clickAndHold(element) {
+    this.steps.push(this.resolveOptionalElementAction(arguments, "clickAndHoldElement", "clickAndHoldCursor"));
     return this;
   }
 
   clickAndHoldElement(element) {
-    this.steps.push({
-      action: "clickAndHoldElement",
-      element: this.resolveElementRef(element)
-    });
-    return this;
+    return this.clickAndHold(element);
   }
 
   /* RELEASE */
-  release() {
-    this.steps.push({ action: "releaseCursor" });
+  release(element) {
+    this.steps.push(this.resolveOptionalElementAction(arguments, "releaseElement", "releaseCursor"));
     return this;
   }
 
   releaseElement(element) {
-    this.steps.push({
-      action: "releaseElement",
-      element: this.resolveElementRef(element)
-    });
-    return this;
+    return this.release(element);
   }
 
   /* DRAG */
@@ -371,28 +388,60 @@ class InteractionChain {
   }
 
   /* KEYBOARD */
-  keyDown(key) {
+  keyDown(targetOrKey, maybeKey) {
+    if (this.isElementObject(targetOrKey)) {
+      this.steps.push({
+        action: "keyDown",
+        element: this.resolveElementRef(targetOrKey),
+        key: maybeKey
+      });
+      return this;
+    }
+
     this.steps.push({
       action: "keyDown",
-      key
+      key: targetOrKey
     });
     return this;
   }
 
-  keyUp(key) {
+  keyDownElement(element, key) {
+    return this.keyDown(element, key);
+  }
+
+  keyUp(targetOrKey, maybeKey) {
+    if (this.isElementObject(targetOrKey)) {
+      this.steps.push({
+        action: "keyUp",
+        element: this.resolveElementRef(targetOrKey),
+        key: maybeKey
+      });
+      return this;
+    }
+
     this.steps.push({
       action: "keyUp",
-      key
+      key: targetOrKey
     });
     return this;
+  }
+
+  keyUpElement(element, key) {
+    return this.keyUp(element, key);
   }
 
   sendKeys(...keys) {
+    const normalizedArgs = this.normalizeSendKeysArgs(keys);
     this.steps.push({
       action: "sendKeys",
-      keys
+      ...(normalizedArgs.element ? { element: normalizedArgs.element } : {}),
+      keys: normalizedArgs.keys
     });
     return this;
+  }
+
+  sendKeysElement(element, ...keys) {
+    return this.sendKeys(element, ...keys);
   }
 
   pause(ms) {
@@ -615,27 +664,41 @@ window.aj__webdriver = {
 function getNativeFunctions() {
     return new Promise((resolve, reject) => {
         try {
-            const existingFrame = document.getElementById('aj__helper_frame');
+            const existingFrame = document.getElementById(AJ_HELPER_FRAME_ID);
 
             if (existingFrame && existingFrame.contentWindow) {
                 return resolve(extractNative(existingFrame.contentWindow));
             }
 
             const iframe = document.createElement('iframe');
-            iframe.id = 'aj__helper_frame';
+            iframe.id = AJ_HELPER_FRAME_ID;
+            iframe.name = AJ_HELPER_FRAME_ID;
+            iframe.setAttribute('data-aj-helper-frame', 'true');
             iframe.style.display = 'none';
             iframe.style.visibility = 'hidden';
+            let settled = false;
 
             const timeout = setTimeout(() => {
+                settled = true;
                 reject(new Error('Iframe load timed out'));
             }, 10000);
 
-            iframe.onload = () => {
+            const resolveFromIframe = () => {
+                if (settled || !iframe.contentWindow) {
+                    return;
+                }
+                settled = true;
                 clearTimeout(timeout);
                 resolve(extractNative(iframe.contentWindow));
             };
 
+            iframe.onload = resolveFromIframe;
+
             document.documentElement.appendChild(iframe);
+
+            if (iframe.contentWindow) {
+                setTimeout(resolveFromIframe, 0);
+            }
         } catch (e) {
             reject(e);
         }

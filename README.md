@@ -401,15 +401,18 @@ Supported methods:
 ```js
 // Mouse click
 chain.click();
+chain.click(element);
 chain.clickElement(element);
 chain.clickElementOffset(element, x, y);
 
 // Double click
 chain.doubleClick();
+chain.doubleClick(element);
 chain.doubleClickElement(element);
 
 // Context click
 chain.contextClick();
+chain.contextClick(element);
 chain.contextClickElement(element);
 
 // Move
@@ -419,8 +422,10 @@ chain.moveByOffset(x, y);
 
 // Hold / release
 chain.clickAndHold();
+chain.clickAndHold(element);
 chain.clickAndHoldElement(element);
 chain.release();
+chain.release(element);
 chain.releaseElement(element);
 
 // Drag
@@ -429,8 +434,14 @@ chain.dragAndDropBy(sourceElement, x, y);
 
 // Keyboard / timing
 chain.keyDown(key);
+chain.keyDown(element, key);
+chain.keyDownElement(element, key);
 chain.keyUp(key);
+chain.keyUp(element, key);
+chain.keyUpElement(element, key);
 chain.sendKeys(...keys);
+chain.sendKeys(element, ...keys);
+chain.sendKeysElement(element, ...keys);
 chain.pause(ms);
 
 // Chain lifecycle
@@ -447,10 +458,10 @@ const username = document.querySelector("#username");
 const submit = document.querySelector("button[type='submit']");
 
 const chain = aj__webdriver.interaction_chain()
-  .clickElement(username)
-  .sendKeys("john.doe")
+  .click(username)
+  .sendKeys(username, "john.doe")
   .pause(150)
-  .clickElement(submit);
+  .click(submit);
 
 console.log(chain.toString());
 await chain.perform();
@@ -502,8 +513,8 @@ chain.clearChain();
 const editor = document.querySelector("#editor");
 
 const chain = aj__webdriver.interaction_chain()
-  .clickElement(editor)
-  .keyDown("CONTROL")
+  .click(editor)
+  .keyDown(editor, "CONTROL")
   .sendKeys("a")
   .keyUp("CONTROL")
   .sendKeys("DELETE");

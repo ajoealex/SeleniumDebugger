@@ -62,7 +62,8 @@ function normalizeInteractionKeys(keys) {
     throw new Error("keys must be a non-empty array");
   }
 
-  return keys.map((key) => normalizeInteractionKey(key));
+  const normalizedInput = keys.length === 1 && Array.isArray(keys[0]) ? keys[0] : keys;
+  return normalizeSendKeysValue(normalizedInput).map((key) => normalizeInteractionKey(key));
 }
 
 function toFiniteNumber(value, fieldName) {
@@ -498,12 +499,21 @@ function registerRoutes(app, context) {
             });
             break;
           case "keyDown":
+            if (step.element) {
+              actions.click(await resolveStepElement(step.element));
+            }
             actions.keyDown(normalizeInteractionKey(step.key));
             break;
           case "keyUp":
+            if (step.element) {
+              actions.click(await resolveStepElement(step.element));
+            }
             actions.keyUp(normalizeInteractionKey(step.key));
             break;
           case "sendKeys":
+            if (step.element) {
+              actions.click(await resolveStepElement(step.element));
+            }
             actions.sendKeys(...normalizeInteractionKeys(step.keys));
             break;
           case "pause":
